@@ -27,13 +27,17 @@ uwlt create savings               # 直接指定名称
 uwlt import imported              # 隐藏输入已有私钥，保存为 imported
 uwlt list
 uwlt address
-uwlt balance
-uwlt balance "$(uwlt address)"     # 也可查询任意地址，无需拥有其私钥
+uwlt balance                      # 未指定网络，先交互选择
+uwlt --network polygon balance "$(uwlt --network polygon address)"
 uwlt --network polygon balance --all
 uwlt -w savings --network ethereum address
 ```
 
-钱包名只接受小写字母 `a-z`。默认钱包为 `main`，用 `-w 名称` 或 `--wallet 名称` 选择其他钱包；默认网络为 TRON 主网，用 `--network` 切换：
+钱包名只接受小写字母 `a-z`。默认钱包为 `main`，用 `-w 名称` 或 `--wallet 名称` 选择其他钱包。创建和导入不需要选网络，完成后同时显示 TRON 与 EVM（Ethereum / Polygon）地址；同一私钥可用于所有支持网络。
+
+**不设默认网络。** 地址、列表、同步、余额、转账、兑换和交易查询等命令，未指定 `--network` 时会先显示网络列表，输入编号或网络名后才继续；直接回车或 EOF 会取消。脚本中请显式传入 `--network`。
+
+私钥导出、备份、删除、`doctor` 和补全不询问网络；`fees --all` 查询所有网络，也不要求单独选择。
 
 | `--network` | 网络 | 默认代币 / 手续费币 |
 | --- | --- | --- |
@@ -43,7 +47,7 @@ uwlt -w savings --network ethereum address
 | `sepolia` | Ethereum Sepolia 测试网 | 自选测试代币 / ETH |
 | `polygon` | Polygon PoS 主网 | USDT0 / POL |
 
-同一私钥可用于所有支持网络，Ethereum 与 Polygon 使用相同地址。Sepolia 没有预设 USDT，查询或发送测试代币时用 `--token 合约地址` 指定六位小数的兼容合约；主网代币合约固定。
+Ethereum 与 Polygon 使用相同地址，但余额和交易各自独立。Sepolia 没有预设 USDT，查询或发送测试代币时用 `--token 合约地址` 指定六位小数的兼容合约；主网代币合约固定。
 
 `balance --all` 按名称显示所选网络下所有本地钱包的余额，不跨网络汇总，也不能与 `-w` 或指定地址混用。
 
@@ -52,9 +56,9 @@ uwlt -w savings --network ethereum address
 `--to` 接受收款地址或本地钱包名。下面以已有的 `savings` 钱包为收款人：
 
 ```sh
-uwlt send 10 --to savings --dry-run          # 先模拟，不签名、不广播
-uwlt send 10 --to savings                    # USDT
-uwlt send 5 --to savings --trx               # TRX
+uwlt send 10 --to savings --dry-run          # 先选网络，再模拟；不签名、不广播
+uwlt --network mainnet send 10 --to savings  # TRON USDT
+uwlt --network mainnet send 5 --to savings --trx
 uwlt --network ethereum send 0.01 --to savings --eth
 uwlt --network polygon send 1 --to savings --pol
 uwlt --network polygon send 10 --to savings  # USDT0
@@ -70,8 +74,8 @@ USDT / USDT0 / TRX 最多六位小数，ETH / POL 最多十八位。TRON 的 `se
 ## USDT 兑换手续费币
 
 ```sh
-uwlt swap 5 --dry-run                  # 预览 5 USDT → TRX
-uwlt swap 5                           # SunSwap V2
+uwlt --network mainnet swap 5 --dry-run # 预览 5 USDT → TRX
+uwlt --network mainnet swap 5          # SunSwap V2
 uwlt --network ethereum swap 5         # Uniswap V2：USDT → ETH
 uwlt --network polygon swap 5 --slippage 1 # QuickSwap V2：USDT0 → POL
 ```
@@ -85,9 +89,9 @@ uwlt --network polygon swap 5 --slippage 1 # QuickSwap V2：USDT0 → POL
 ```sh
 uwlt --network ethereum send 100 --to savings --to-network mainnet --dry-run
 uwlt --network ethereum send 100 --to savings --to-network mainnet
-uwlt -w savings send 100 --to main --to-network ethereum
+uwlt -w savings --network mainnet send 100 --to main --to-network ethereum
 uwlt --network ethereum bridge-status <Ethereum源链交易哈希>
-uwlt bridge-status <TRON源链交易哈希>
+uwlt --network mainnet bridge-status <TRON源链交易哈希>
 ```
 
 报价显示目标到账、桥接费用和预计时间；源链网络费另付，不额外购买目标链手续费币。**源链交易确认不等于目标链到账**：发送命令确认源链交易后结束，用它打印的 `bridge-status` 命令继续跟踪目标链到账或退款状态。多笔回执列出的实际费用合计仅是源链网络费，不含报价中的桥接费用。

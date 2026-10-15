@@ -286,12 +286,6 @@ fn parse_address(input: &str) -> Result<Address> {
     }
 }
 
-pub fn address(key: &[u8; 32]) -> Result<String> {
-    Ok(PrivateKeySigner::from_slice(key)?
-        .address()
-        .to_checksum(None))
-}
-
 /// Pure local signing: no RPC, nonce filling, gas estimation, or field mutation.
 pub fn sign(prepared: &Prepared, key: &[u8; 32]) -> Result<Signed> {
     let signer = PrivateKeySigner::from_slice(key)?;

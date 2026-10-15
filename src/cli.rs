@@ -32,8 +32,8 @@ pub struct Cli {
         help = "Wallet name"
     )]
     wallet: String,
-    #[arg(long, global = true, value_enum, default_value = "mainnet")]
-    network: Network,
+    #[arg(long, global = true, value_enum, help = "Network; prompt when omitted")]
+    network: Option<Network>,
     #[arg(long, global = true, env = "UWLT_RPC", help = "HTTP RPC endpoint")]
     rpc: Option<String>,
     #[arg(long, global = true, help = "Sepolia test-token contract")]
@@ -99,10 +99,17 @@ enum Command {
 
 impl Cli {
     pub fn run(self) -> Result<()> {
-        ensure!(
-            self.token.is_none() || matches!(self.network, Network::Sepolia),
-            "--token is only used with Sepolia"
-        );
+        let select_network = || -> Result<Network> {
+            let network = match self.network {
+                Some(network) => network,
+                None => Network::prompt()?,
+            };
+            ensure!(
+                self.token.is_none() || matches!(network, Network::Sepolia),
+                "--token is only used with Sepolia"
+            );
+            Ok(network)
+        };
         match self.command {
             Command::Completion { shell } => {
                 clap_complete::generate(shell, &mut Self::command(), "uwlt", &mut io::stdout());
@@ -122,21 +129,23 @@ impl Cli {
                 let mut store = Store::open()?;
                 store.check_new(&name)?;
                 let key = core::generate()?;
-                add_wallet(&mut store, name, &key, self.network)?;
+                add_wallet(&mut store, name, &key)?;
             }
             Command::Import { name, file } => {
                 let mut store = Store::open()?;
                 store.check_new(&name)?;
                 let key = wallet::read_key(file.as_deref())?;
-                add_wallet(&mut store, name, &key, self.network)?;
+                add_wallet(&mut store, name, &key)?;
             }
             Command::List => {
+                let network = select_network()?;
                 let store = Store::open()?;
                 for (name, wallet) in store.entries() {
-                    println!("{name}\t{}", self.network.address(wallet)?);
+                    println!("{name}\t{}", network.address(wallet)?);
                 }
             }
             Command::Sync => {
+                let network = select_network()?;
                 let mut store = Store::open()?;
                 let wallets: Vec<_> = store
                     .entries()
@@ -150,25 +159,27 @@ impl Cli {
                 let count = wallets.len();
                 store.replace(wallets)?;
                 for (name, wallet) in store.entries() {
-                    println!("{name}\t{}", self.network.address(wallet)?);
+                    println!("{name}\t{}", network.address(wallet)?);
                 }
                 println!(
                     "{count} wallet(s) available in iCloud Keychain; delivery to other devices is managed by macOS."
                 );
             }
             Command::Address => {
+                let network = select_network()?;
                 let store = Store::open()?;
-                println!("{}", self.network.address(store.get(&self.wallet)?)?);
+                println!("{}", network.address(store.get(&self.wallet)?)?);
             }
             Command::Balance { address, all } => {
+                let network = select_network()?;
                 if all {
                     let store = Store::open()?;
                     query::balance(
-                        self.network,
+                        network,
                         self.rpc.as_deref(),
                         self.token.as_deref(),
                         store.entries().map(|(name, wallet)| {
-                            self.network
+                            network
                                 .address(wallet)
                                 .map(|address| (Some(name.as_str()), address))
                         }),
@@ -178,11 +189,11 @@ impl Cli {
                         Some(address) => (None, address),
                         None => (
                             Some(self.wallet.as_str()),
-                            self.network.address(Store::open()?.get(&self.wallet)?)?,
+                            network.address(Store::open()?.get(&self.wallet)?)?,
                         ),
                     };
                     query::balance(
-                        self.network,
+                        network,
                         self.rpc.as_deref(),
                         self.token.as_deref(),
                         std::iter::once(Ok(account)),
@@ -190,39 +201,44 @@ impl Cli {
                 }
             }
             Command::Swap(swap) => {
+                let network = select_network()?;
                 let store = Store::open()?;
                 swap.run(
-                    self.network,
+                    network,
                     self.rpc.as_deref(),
                     self.token.as_deref(),
                     store.get(&self.wallet)?,
                 )?;
             }
             Command::Fees { all } => {
-                fees::run(
-                    self.network,
-                    self.rpc.as_deref(),
-                    self.token.as_deref(),
-                    all,
-                )?;
+                if all {
+                    fees::all()?;
+                } else {
+                    fees::run(
+                        select_network()?,
+                        self.rpc.as_deref(),
+                        self.token.as_deref(),
+                    )?;
+                }
             }
             Command::Send(mut transfer) => {
+                let network = select_network()?;
                 let store = Store::open()?;
-                transfer.resolve_recipient(self.network, &store)?;
+                transfer.resolve_recipient(network, &store)?;
                 println!("Wallet   {}", self.wallet);
                 transfer.run(
-                    self.network,
+                    network,
                     self.rpc.as_deref(),
                     self.token.as_deref(),
                     store.get(&self.wallet)?,
                 )?;
             }
             Command::BridgeStatus { txid } => {
-                bridge::status(self.network, &txid)?;
+                bridge::status(select_network()?, &txid)?;
             }
             Command::Status { txid } => {
                 query::status(
-                    self.network,
+                    select_network()?,
                     self.rpc.as_deref(),
                     self.token.as_deref(),
                     &txid,
@@ -263,14 +279,10 @@ impl Cli {
     }
 }
 
-fn add_wallet(store: &mut Store, name: String, key: &[u8; 32], network: Network) -> Result<()> {
+fn add_wallet(store: &mut Store, name: String, key: &[u8; 32]) -> Result<()> {
     let wallet = Wallet {
         address: core::address(key)?,
         id: uuid::Uuid::new_v4().to_string(),
-    };
-    let address = match network.chain() {
-        network::Chain::Tron(_) => wallet.address.clone(),
-        network::Chain::Ethereum(_) => crate::ethereum::address(key)?,
     };
     vault::save(
         &wallet.id,
@@ -280,7 +292,10 @@ fn add_wallet(store: &mut Store, name: String, key: &[u8; 32], network: Network)
         &format!("Save wallet {name}"),
     )?;
     store.insert(name.clone(), wallet)?;
-    println!("{name}  {address}");
+    let wallet = store.get(&name)?;
+    println!("{name}");
+    println!("TRON  {}", wallet.address);
+    println!("EVM   {} (Ethereum / Polygon)", wallet.ethereum_address()?);
     println!("Back up with: uwlt --wallet {name} backup <file>");
     Ok(())
 }

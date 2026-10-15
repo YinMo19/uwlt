@@ -3,17 +3,12 @@ use anyhow::{Result, bail};
 use super::network::{Chain, Network};
 use crate::{ethereum, tron};
 
-pub(super) fn run(
-    network: Network,
-    rpc: Option<&str>,
-    token: Option<&str>,
-    all: bool,
-) -> Result<()> {
-    if !all {
-        print!("{}", rates(network, rpc, token)?);
-        return Ok(());
-    }
+pub(super) fn run(network: Network, rpc: Option<&str>, token: Option<&str>) -> Result<()> {
+    print!("{}", rates(network, rpc, token)?);
+    Ok(())
+}
 
+pub(super) fn all() -> Result<()> {
     let networks = [
         Network::Mainnet,
         Network::Nile,
