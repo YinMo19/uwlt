@@ -1,0 +1,73 @@
+use anyhow::Result;
+
+use super::{
+    network::{Chain, Network},
+    receipt,
+};
+use crate::{ethereum, tron};
+
+pub(super) fn balance<'a>(
+    network: Network,
+    rpc: Option<&str>,
+    token: Option<&str>,
+    accounts: impl IntoIterator<Item = Result<(Option<&'a str>, String)>>,
+) -> Result<()> {
+    let mut accounts = accounts.into_iter().peekable();
+    if accounts.peek().is_none() {
+        println!("No local wallets. Use `uwlt create` or `uwlt sync`.");
+        return Ok(());
+    }
+    match network.chain() {
+        Chain::Tron(network) => {
+            let client = tron::Client::new(network, rpc)?;
+            for (index, account) in accounts.enumerate() {
+                let (name, address) = account?;
+                let balance = client.balance(&address)?;
+                account_heading(index, name, &address);
+                println!("USDT  {}", tron::format_amount(balance.usdt));
+                println!("TRX   {}", tron::format_amount(balance.trx));
+            }
+        }
+        Chain::Ethereum(network) => {
+            let client = ethereum::Client::new(network, rpc, token)?;
+            for (index, account) in accounts.enumerate() {
+                let (name, address) = account?;
+                let balance = client.balance(&address)?;
+                account_heading(index, name, &address);
+                if let Some(usdt) = balance.usdt {
+                    println!("{:<5} {usdt}", client.token_symbol());
+                }
+                println!("{:<5} {}", client.native_symbol(), balance.native);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn account_heading(index: usize, name: Option<&str>, address: &str) {
+    if index > 0 {
+        println!();
+    }
+    match name {
+        Some(name) => println!("{name}  {address}"),
+        None => println!("{address}"),
+    }
+}
+
+pub(super) fn status(
+    network: Network,
+    rpc: Option<&str>,
+    token: Option<&str>,
+    txid: &str,
+) -> Result<()> {
+    match network.chain() {
+        Chain::Tron(chain) => {
+            let status = tron::Client::new(chain, rpc)?.status(txid)?;
+            receipt::tron(network, txid, &status, None)
+        }
+        Chain::Ethereum(chain) => {
+            let status = ethereum::Client::new(chain, rpc, token)?.status(txid)?;
+            receipt::ethereum(network, txid, &status, None)
+        }
+    }
+}

@@ -1,0 +1,12 @@
+/target
+/dist
+*.provisionprofile
+*.mobileprovision
+*.p12
+*.p8
+*.pem
+*.key
+/key.txt
+.env
+.env.*
+.DS_Store
