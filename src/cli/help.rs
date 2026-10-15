@@ -61,14 +61,14 @@ pub(super) const ADDRESS: &str = cstr!(
 
 pub(super) const BALANCE: &str = cstr!(
     r#"<bold><underline>Examples:</underline></bold>
-  Show the default wallet's USDT0 and POL balances:
+  Show every local wallet's USDT0 and POL balances:
     <bold>uwlt balance --network</bold> polygon
 
   Show savings' USDT and ETH balances:
     <bold>uwlt balance -w</bold> savings <bold>--network</bold> ethereum
 
   Show every local wallet's TRON balances:
-    <bold>uwlt balance --all --network</bold> mainnet"#
+    <bold>uwlt balance --network</bold> mainnet"#
 );
 
 pub(super) const SEND: &str = cstr!(

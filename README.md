@@ -21,15 +21,15 @@ uwlt create main                 # 创建钱包
 uwlt import savings              # 隐藏输入私钥并导入
 uwlt list                        # 列出钱包
 uwlt address                     # 收款地址
-uwlt balance                     # 余额
-uwlt --network polygon balance --all
+uwlt balance                     # 所有本地钱包在所选网络上的余额
+uwlt --network polygon balance
 uwlt --network polygon send 10 --to savings --dry-run
 uwlt --network polygon send 10 --to savings
 uwlt --network polygon status <交易哈希>
 uwlt fees --all                   # 各网络手续费预览
 ```
 
-默认钱包是 `main`，用 `-w savings` 切换。`--to` 可填地址或本地钱包名。创建、导入不选网络；其他网络相关操作未传 `--network` 时会交互询问，没有默认网络。
+`balance` 默认查询所有本地钱包在所选网络上的余额，无需 `--all`；用 `balance -w savings` 只查询指定钱包，或用 `balance <地址>` 查询指定地址。其他需要选择钱包的命令默认使用 `main`，用 `-w savings` 切换。`--to` 可填地址或本地钱包名。创建、导入不选网络；其他网络相关操作未传 `--network` 时会交互询问，没有默认网络。
 
 ## 兑换与跨链
 

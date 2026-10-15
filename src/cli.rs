@@ -34,10 +34,9 @@ pub struct Cli {
         short,
         long,
         global = true,
-        default_value = "main",
-        help = "Wallet name"
+        help = "Wallet name (balance: all wallets when omitted; other commands: main)"
     )]
-    wallet: String,
+    wallet: Option<String>,
     #[arg(long, global = true, value_enum, help = "Network; prompt when omitted")]
     network: Option<Network>,
     #[arg(long, global = true, env = "UWLT_RPC", help = "HTTP RPC endpoint")]
@@ -70,17 +69,9 @@ enum Command {
     /// Print the receiving address on the selected network
     #[command(after_help = help::ADDRESS)]
     Address,
-    /// Show token and native-coin balances for a wallet or address
+    /// Show token and native-coin balances for all local wallets, or a selected wallet or address
     #[command(after_help = help::BALANCE)]
-    Balance {
-        address: Option<String>,
-        #[arg(
-            long,
-            conflicts_with_all = ["address", "wallet"],
-            help = "Show every local wallet on the selected network"
-        )]
-        all: bool,
-    },
+    Balance { address: Option<String> },
     /// Send USDT/USDT0, or use --trx / --eth / --pol for the native coin
     #[command(after_help = help::SEND)]
     Send(Transfer),
@@ -127,6 +118,7 @@ enum Command {
 
 impl Cli {
     pub fn run(self) -> Result<()> {
+        let wallet_name = self.wallet.as_deref().unwrap_or("main");
         let select_network = || -> Result<Network> {
             let network = match self.network {
                 Some(network) => network,
@@ -204,11 +196,11 @@ impl Cli {
             Command::Address => {
                 let network = select_network()?;
                 let store = Store::open()?;
-                println!("{}", network.address(store.get(&self.wallet)?)?);
+                println!("{}", network.address(store.get(wallet_name)?)?);
             }
-            Command::Balance { address, all } => {
+            Command::Balance { address } => {
                 let network = select_network()?;
-                if all {
+                if address.is_none() && self.wallet.is_none() {
                     let store = Store::open()?;
                     query::balance(
                         network,
@@ -224,8 +216,8 @@ impl Cli {
                     let account = match address {
                         Some(address) => (None, address),
                         None => (
-                            Some(self.wallet.as_str()),
-                            network.address(Store::open()?.get(&self.wallet)?)?,
+                            Some(wallet_name),
+                            network.address(Store::open()?.get(wallet_name)?)?,
                         ),
                     };
                     query::balance(
@@ -243,7 +235,7 @@ impl Cli {
                     network,
                     self.rpc.as_deref(),
                     self.token.as_deref(),
-                    store.get(&self.wallet)?,
+                    store.get(wallet_name)?,
                 )?;
             }
             Command::Fees { all } => {
@@ -261,12 +253,12 @@ impl Cli {
                 let network = select_network()?;
                 let store = Store::open()?;
                 transfer.resolve_recipient(network, &store)?;
-                println!("Wallet   {}", self.wallet);
+                println!("Wallet   {wallet_name}");
                 transfer.run(
                     network,
                     self.rpc.as_deref(),
                     self.token.as_deref(),
-                    store.get(&self.wallet)?,
+                    store.get(wallet_name)?,
                 )?;
             }
             Command::BridgeStatus { txid } => {
@@ -282,17 +274,16 @@ impl Cli {
             }
             Command::Key => {
                 let store = Store::open()?;
-                let wallet = store.get(&self.wallet)?;
-                let key =
-                    vault::load(&wallet.id, &format!("Show private key for {}", self.wallet))?;
+                let wallet = store.get(wallet_name)?;
+                let key = vault::load(&wallet.id, &format!("Show private key for {wallet_name}"))?;
                 let encoded = Zeroizing::new(hex::encode(key.as_slice()));
-                writeln!(io::stdout().lock(), "{}  {}", self.wallet, &*encoded)?;
+                writeln!(io::stdout().lock(), "{wallet_name}  {}", &*encoded)?;
             }
             Command::Backup { path } => {
                 ensure!(!path.exists(), "backup path already exists");
                 let store = Store::open()?;
-                let wallet = store.get(&self.wallet)?;
-                let key = vault::load(&wallet.id, &format!("Back up wallet {}", self.wallet))?;
+                let wallet = store.get(wallet_name)?;
+                let key = vault::load(&wallet.id, &format!("Back up wallet {wallet_name}"))?;
                 wallet::write_backup(&path, &key)?;
                 println!("Private key saved to {} (mode 0600).", path.display());
             }
