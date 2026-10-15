@@ -123,4 +123,4 @@ eval "$(uwlt completion zsh)"
 - `UWLT_HOME`：公共钱包元数据目录，默认 `~/Library/Application Support/uwlt`，不存私钥。
 - `uwlt --help`、`uwlt send --help`：查看完整命令与选项。
 
-许可证：[MIT](LICENSE)。
+许可证：[MIT](LICENSE)。第三方测试向量保留其[原始许可](LICENSE-THIRD-PARTY)。
