@@ -11,7 +11,7 @@ use crate::{ethereum, swap::Summary, tron, vault, wallet::Wallet};
 
 #[derive(Args)]
 pub(super) struct Swap {
-    /// Amount of USDT to exchange
+    /// Amount of USDT/USDT0 to exchange
     amount: String,
     #[arg(long = "slippage", default_value = "0.5", value_parser = slippage,
         help = "Maximum slippage in percent")]

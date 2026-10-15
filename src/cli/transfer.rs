@@ -16,6 +16,7 @@ use crate::{
 
 #[derive(Args)]
 pub(super) struct Transfer {
+    /// Amount of USDT/USDT0, or native coin when its flag is set
     amount: String,
     #[arg(long, help = "Recipient address or local wallet name")]
     to: String,
@@ -25,11 +26,11 @@ pub(super) struct Transfer {
         help = "Destination network for an Allbridge transfer"
     )]
     to_network: Option<Network>,
-    #[arg(long, group = "native")]
+    #[arg(long, group = "native", help = "Send native TRX on TRON")]
     trx: bool,
-    #[arg(long, group = "native")]
+    #[arg(long, group = "native", help = "Send native ETH on Ethereum")]
     eth: bool,
-    #[arg(long, group = "native")]
+    #[arg(long, group = "native", help = "Send native POL on Polygon")]
     pol: bool,
     #[arg(long, help = "TRON energy budget in TRX (default: 100)")]
     fee_limit: Option<String>,

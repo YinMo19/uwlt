@@ -1,5 +1,6 @@
 mod bridge;
 mod fees;
+mod help;
 mod network;
 mod query;
 mod receipt;
@@ -22,7 +23,12 @@ use network::Network;
 use transfer::Transfer;
 
 #[derive(Parser)]
-#[command(version, about = "USDT wallet for TRON, Ethereum and Polygon")]
+#[command(
+    version,
+    disable_help_subcommand = true,
+    about = "USDT wallet for TRON, Ethereum and Polygon",
+    after_help = help::QUICK_START
+)]
 pub struct Cli {
     #[arg(
         short,
@@ -45,8 +51,10 @@ pub struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Create a wallet; prompt for a name when omitted
+    #[command(after_help = help::CREATE)]
     Create { name: Option<String> },
     /// Import a private key from hidden input or a backup file
+    #[command(after_help = help::IMPORT)]
     Import {
         #[arg(default_value = "main")]
         name: String,
@@ -54,12 +62,16 @@ enum Command {
         file: Option<PathBuf>,
     },
     /// List local wallets
+    #[command(after_help = help::LIST)]
     List,
     /// Migrate keys to iCloud Keychain and refresh local wallets from downloaded items
+    #[command(after_help = help::SYNC)]
     Sync,
     /// Print the receiving address on the selected network
+    #[command(after_help = help::ADDRESS)]
     Address,
     /// Show token and native-coin balances for a wallet or address
+    #[command(after_help = help::BALANCE)]
     Balance {
         address: Option<String>,
         #[arg(
@@ -69,31 +81,47 @@ enum Command {
         )]
         all: bool,
     },
-    /// Send USDT, or use --trx / --eth / --pol for the native coin
+    /// Send USDT/USDT0, or use --trx / --eth / --pol for the native coin
+    #[command(after_help = help::SEND)]
     Send(Transfer),
-    /// Exchange USDT for the selected network's native coin
+    /// Exchange USDT/USDT0 for the selected network's native coin
+    #[command(after_help = help::SWAP)]
     Swap(swap::Swap),
     /// Show current network fee rates
+    #[command(after_help = help::FEES)]
     Fees {
         #[arg(long, help = "Query every supported network using its default RPC")]
         all: bool,
     },
     /// Query transaction execution and confirmation
+    #[command(after_help = help::STATUS)]
     Status { txid: String },
     /// Track an Allbridge transfer to its destination
+    #[command(after_help = help::BRIDGE_STATUS)]
     BridgeStatus { txid: String },
     /// Show the wallet name and private key
+    #[command(after_help = help::KEY)]
     Key,
     /// Export the private key to a new owner-only file
+    #[command(after_help = help::BACKUP)]
     Backup { path: PathBuf },
     /// Remove a wallet from iCloud Keychain on all devices; funds remain on chain
+    #[command(after_help = help::REMOVE)]
     Remove { name: String },
     /// Check Wallet Core and Touch ID availability
+    #[command(after_help = help::DOCTOR)]
     Doctor,
     /// Generate shell completions
+    #[command(after_help = help::COMPLETION)]
     Completion {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+    /// Show the command overview or help for one subcommand
+    #[command(after_help = help::HELP)]
+    Help {
+        /// Subcommand to explain
+        command: Option<String>,
     },
 }
 
@@ -111,6 +139,14 @@ impl Cli {
             Ok(network)
         };
         match self.command {
+            Command::Help { command } => {
+                return Self::parse_from(
+                    std::iter::once("uwlt")
+                        .chain(command.as_deref())
+                        .chain(std::iter::once("--help")),
+                )
+                .run();
+            }
             Command::Completion { shell } => {
                 clap_complete::generate(shell, &mut Self::command(), "uwlt", &mut io::stdout());
             }
