@@ -57,6 +57,6 @@ uwlt remove restored              # 输入 confirm，再验证 Touch ID
 
 在 `~/.zshrc` 加入 `eval "$(uwlt completion zsh)"`；Bash 则在 `~/.bashrc` 中将 `zsh` 改为 `bash`。
 
-`uwlt -h` 查看命令；每个子命令的帮助都含示例，例如 `uwlt send -h`、`uwlt swap --help`。
+`uwlt -h` 查看命令；每个子命令的帮助都含示例，例如 `uwlt send -h`、`uwlt swap --help`。设置 `NO_COLOR=1` 可关闭帮助中的样式。
 
 [MIT](LICENSE) · [第三方测试向量许可](LICENSE-THIRD-PARTY)

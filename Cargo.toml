@@ -1,6 +1,6 @@
 [package]
 name = "uwlt"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A native wallet for TRON, Ethereum and Polygon"
 rust-version = "1.94.1"
@@ -21,6 +21,7 @@ prost = "0.14"
 bs58 = { version = "0.5", features = ["check"] }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
+color-print = "0.3"
 hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rpassword = "7"

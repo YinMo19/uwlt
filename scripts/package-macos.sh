@@ -44,6 +44,7 @@ trap 'exit 143' TERM
 app="$work/uwlt.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 version=$(cargo pkgid --manifest-path "$root/Cargo.toml" --offline)
+version=${version##*#}
 version=${version##*@}
 security cms -D -i "$profile" -o "$work/profile.plist"
 /usr/bin/python3 - "$work/profile.plist" "$bundle_id" "$app" "$work/entitlements.plist" "$version" <<'PY'

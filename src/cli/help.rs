@@ -1,154 +1,192 @@
-pub(super) const QUICK_START: &str = r#"Examples:
+use color_print::cstr;
+
+pub(super) const QUICK_START: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Create a wallet, then view its Polygon address and balance:
-    uwlt create main
-    uwlt address --network polygon
-    uwlt balance --network polygon
+    <bold>uwlt create</bold> main
+    <bold>uwlt address --network</bold> polygon
+    <bold>uwlt balance --network</bold> polygon
 
   Show transfer options and examples:
-    uwlt send --help"#;
+    <bold>uwlt send --help</bold>"#
+);
 
-pub(super) const CREATE: &str = r#"Examples:
+pub(super) const CREATE: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Create the default wallet:
-    uwlt create main
+    <bold>uwlt create</bold> main
 
   Create another wallet:
-    uwlt create savings
+    <bold>uwlt create</bold> savings
 
   Choose the name interactively:
-    uwlt create"#;
+    <bold>uwlt create</bold>"#
+);
 
-pub(super) const IMPORT: &str = r#"Examples:
+pub(super) const IMPORT: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Import a key using hidden input:
-    uwlt import savings
+    <bold>uwlt import</bold> savings
 
   Import a previously exported key file:
-    uwlt import savings --file ~/savings.key"#;
+    <bold>uwlt import</bold> savings <bold>--file</bold> ~/savings.key"#
+);
 
-pub(super) const LIST: &str = r#"Examples:
+pub(super) const LIST: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   List local wallets with Polygon addresses:
-    uwlt list --network polygon
+    <bold>uwlt list --network</bold> polygon
 
   List the same wallets with TRON addresses:
-    uwlt list --network mainnet"#;
+    <bold>uwlt list --network</bold> mainnet"#
+);
 
-pub(super) const SYNC: &str = r#"Examples:
+pub(super) const SYNC: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Sync wallets and display their Polygon addresses:
-    uwlt sync --network polygon
+    <bold>uwlt sync --network</bold> polygon
 
   Sync wallets and display their TRON addresses:
-    uwlt sync --network mainnet"#;
+    <bold>uwlt sync --network</bold> mainnet"#
+);
 
-pub(super) const ADDRESS: &str = r#"Examples:
+pub(super) const ADDRESS: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Show the default wallet's Polygon address:
-    uwlt address --network polygon
+    <bold>uwlt address --network</bold> polygon
 
   Show savings' TRON address:
-    uwlt address -w savings --network mainnet"#;
+    <bold>uwlt address -w</bold> savings <bold>--network</bold> mainnet"#
+);
 
-pub(super) const BALANCE: &str = r#"Examples:
+pub(super) const BALANCE: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Show the default wallet's USDT0 and POL balances:
-    uwlt balance --network polygon
+    <bold>uwlt balance --network</bold> polygon
 
   Show savings' USDT and ETH balances:
-    uwlt balance -w savings --network ethereum
+    <bold>uwlt balance -w</bold> savings <bold>--network</bold> ethereum
 
   Show every local wallet's TRON balances:
-    uwlt balance --all --network mainnet"#;
+    <bold>uwlt balance --all --network</bold> mainnet"#
+);
 
-pub(super) const SEND: &str = r#"Examples:
+pub(super) const SEND: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Send 10 USDT0 on Polygon from main to the local wallet savings:
-    uwlt send 10 --network polygon -w main --to savings
+    <bold>uwlt send</bold> 10 <bold>--network</bold> polygon <bold>-w</bold> main <bold>--to</bold> savings
 
   Preview a USDT0 transfer without signing or broadcasting:
-    uwlt send 10 --network polygon --to savings --dry-run
+    <bold>uwlt send</bold> 10 <bold>--network</bold> polygon <bold>--to</bold> savings <bold>--dry-run</bold>
 
   Send native POL, ETH or TRX:
-    uwlt send 1 --network polygon --pol --to savings
-    uwlt send 0.001 --network ethereum --eth --to savings
-    uwlt send 5 --network mainnet --trx --to savings
+    <bold>uwlt send</bold> 1 <bold>--network</bold> polygon <bold>--pol --to</bold> savings
+    <bold>uwlt send</bold> 0.001 <bold>--network</bold> ethereum <bold>--eth --to</bold> savings
+    <bold>uwlt send</bold> 5 <bold>--network</bold> mainnet <bold>--trx --to</bold> savings
 
   Send USDT from Ethereum to TRON through Allbridge:
-    uwlt send 10 --network ethereum --to savings \
-      --to-network mainnet
+    <bold>uwlt send</bold> 10 <bold>--network</bold> ethereum <bold>--to</bold> savings \
+      <bold>--to-network</bold> mainnet
 
   Send USDT from TRON to Ethereum through Allbridge:
-    uwlt send 10 --network mainnet --to savings \
-      --to-network ethereum
+    <bold>uwlt send</bold> 10 <bold>--network</bold> mainnet <bold>--to</bold> savings \
+      <bold>--to-network</bold> ethereum
 
-  Create the recipient wallet first with: uwlt create savings"#;
+  Create the recipient wallet first with: <bold>uwlt create</bold> savings"#
+);
 
-pub(super) const SWAP: &str = r#"Examples:
+pub(super) const SWAP: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Preview exchanging 10 USDT0 for POL:
-    uwlt swap 10 --network polygon --dry-run
+    <bold>uwlt swap</bold> 10 <bold>--network</bold> polygon <bold>--dry-run</bold>
 
   Exchange 10 USDT for ETH from savings with 1% maximum slippage:
-    uwlt swap 10 -w savings --network ethereum --slippage 1
+    <bold>uwlt swap</bold> 10 <bold>-w</bold> savings <bold>--network</bold> ethereum <bold>--slippage</bold> 1
 
   Exchange 10 USDT for TRX:
-    uwlt swap 10 --network mainnet"#;
+    <bold>uwlt swap</bold> 10 <bold>--network</bold> mainnet"#
+);
 
-pub(super) const FEES: &str = r#"Examples:
+pub(super) const FEES: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Show Polygon fee rates:
-    uwlt fees --network polygon
+    <bold>uwlt fees --network</bold> polygon
 
   Show TRON fee rates:
-    uwlt fees --network mainnet
+    <bold>uwlt fees --network</bold> mainnet
 
   Compare all supported networks:
-    uwlt fees --all"#;
+    <bold>uwlt fees --all</bold>"#
+);
 
-pub(super) const STATUS: &str = r#"Examples:
+pub(super) const STATUS: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Check a Polygon transaction (replace TX_HASH with its hash):
-    uwlt status TX_HASH --network polygon
+    <bold>uwlt status</bold> TX_HASH <bold>--network</bold> polygon
 
   Check a TRON transaction:
-    uwlt status TX_HASH --network mainnet"#;
+    <bold>uwlt status</bold> TX_HASH <bold>--network</bold> mainnet"#
+);
 
-pub(super) const BRIDGE_STATUS: &str = r#"Examples:
+pub(super) const BRIDGE_STATUS: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Track an Allbridge transfer sent from Ethereum:
-    uwlt bridge-status SOURCE_TX_HASH --network ethereum
+    <bold>uwlt bridge-status</bold> SOURCE_TX_HASH <bold>--network</bold> ethereum
 
   Track an Allbridge transfer sent from TRON:
-    uwlt bridge-status SOURCE_TX_HASH --network mainnet
+    <bold>uwlt bridge-status</bold> SOURCE_TX_HASH <bold>--network</bold> mainnet
 
-  Replace SOURCE_TX_HASH with the source transaction hash from send."#;
+  Replace SOURCE_TX_HASH with the source transaction hash from send."#
+);
 
-pub(super) const KEY: &str = r#"Examples:
+pub(super) const KEY: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Show the default wallet's private key:
-    uwlt key
+    <bold>uwlt key</bold>
 
   Show savings' private key:
-    uwlt key -w savings"#;
+    <bold>uwlt key -w</bold> savings"#
+);
 
-pub(super) const BACKUP: &str = r#"Examples:
+pub(super) const BACKUP: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Export the default wallet to a new file:
-    uwlt backup ~/main.key
+    <bold>uwlt backup</bold> ~/main.key
 
   Export savings to a new file:
-    uwlt backup ~/savings.key -w savings"#;
+    <bold>uwlt backup</bold> ~/savings.key <bold>-w</bold> savings"#
+);
 
-pub(super) const REMOVE: &str = r#"Examples:
+pub(super) const REMOVE: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Remove the wallet named savings:
-    uwlt remove savings"#;
+    <bold>uwlt remove</bold> savings"#
+);
 
-pub(super) const DOCTOR: &str = r#"Examples:
+pub(super) const DOCTOR: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Check Wallet Core and Touch ID:
-    uwlt doctor"#;
+    <bold>uwlt doctor</bold>"#
+);
 
-pub(super) const COMPLETION: &str = r#"Examples:
+pub(super) const COMPLETION: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Enable completion in the current zsh session:
-    autoload -Uz compinit && compinit
-    eval "$(uwlt completion zsh)"
+    <bold>autoload -Uz</bold> compinit && <bold>compinit</bold>
+    <bold>eval</bold> "$(<bold>uwlt completion</bold> zsh)"
 
   Enable completion in the current bash session:
-    eval "$(uwlt completion bash)""#;
+    <bold>eval</bold> "$(<bold>uwlt completion</bold> bash)""#
+);
 
-pub(super) const HELP: &str = r#"Examples:
+pub(super) const HELP: &str = cstr!(
+    r#"<bold><underline>Examples:</underline></bold>
   Show the command overview:
-    uwlt help
+    <bold>uwlt help</bold>
 
   Show transfer options and examples:
-    uwlt help send
+    <bold>uwlt help</bold> send
 
   Show swap options and examples:
-    uwlt help swap"#;
+    <bold>uwlt help</bold> swap"#
+);
