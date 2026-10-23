@@ -38,17 +38,16 @@ pub struct ContractPlan {
     pub approvals: usize,
     chain_id: u64,
     sender: Address,
-    spender: Address,
+    spender: Option<Address>,
     token: Address,
     units: U256,
-    balance_units: U256,
     destination: Address,
     input: Bytes,
     value: U256,
     gas_ceiling: u64,
     stage: &'static str,
     deadline: u64,
-    initial_allowance: U256,
+    initial_allowance: Option<U256>,
     nonce: u64,
     maximum_fee: u128,
     priority_fee: u128,
@@ -126,7 +125,7 @@ impl Client {
                 .prepare_sequence(
                     sender,
                     token,
-                    router,
+                    Some(router),
                     units,
                     router,
                     input.into(),
@@ -167,25 +166,34 @@ impl Client {
             "bridge source token is not configured USDT"
         );
         let sender = parse_address(from)?;
-        let spender = parse_address(&call.spender)?;
+        let spender = call.spender.as_deref().map(parse_address).transpose()?;
         let destination = parse_address(&call.to)?;
         ensure!(
-            sender != Address::ZERO && spender != Address::ZERO && destination != Address::ZERO,
+            sender != Address::ZERO
+                && spender != Some(Address::ZERO)
+                && destination != Address::ZERO,
             "contract sender, spender and destination must be nonzero"
         );
-        if call.amount.is_zero() {
+        ensure!(!call.amount.is_zero(), "bridge amount must be positive");
+        if destination == token {
             ensure!(
-                destination == token && spender == token && call.value.is_zero(),
-                "zero approval amount is only valid for a direct USDT deposit"
+                spender.is_none() && call.value.is_zero(),
+                "direct USDT deposits cannot require an approval or native value"
             );
+            let prefix = call
+                .data
+                .get(..68)
+                .context("truncated direct USDT transfer")?;
             let transfer =
-                transferCall::abi_decode(&call.data).context("invalid direct USDT transfer")?;
+                transferCall::abi_decode(prefix).context("invalid direct USDT transfer")?;
             ensure!(
-                call.data == transfer.abi_encode()
+                prefix == transfer.abi_encode()
                     && transfer.recipient != Address::ZERO
-                    && !transfer.value.is_zero(),
+                    && transfer.value == call.amount,
                 "invalid direct USDT deposit amount or recipient"
             );
+            // Bridges can append a routing memo to ERC-20 transfer calldata.
+            // Validate the canonical arguments but preserve the complete input.
         }
         ensure!(
             call.data.len() >= 4,
@@ -215,7 +223,7 @@ impl Client {
         &self,
         sender: Address,
         token: Address,
-        spender: Address,
+        spender: Option<Address>,
         units: U256,
         destination: Address,
         input: Bytes,
@@ -224,28 +232,25 @@ impl Client {
         stage: &'static str,
         deadline: u64,
     ) -> Result<ContractPlan> {
-        let initial_allowance = if units.is_zero() {
-            U256::ZERO
-        } else {
-            self.swap_allowance(sender, token, spender).await?
+        let initial_allowance = match spender {
+            Some(spender) => Some(self.swap_allowance(sender, token, spender).await?),
+            None => None,
         };
-        let approvals = if initial_allowance >= units {
-            0
-        } else if initial_allowance.is_zero() {
-            1
-        } else {
-            2
+        let approvals = match initial_allowance {
+            Some(allowance) if allowance < units => {
+                if allowance.is_zero() {
+                    1
+                } else {
+                    2
+                }
+            }
+            _ => 0,
         };
         let fees = self.current_fees().await?;
         let gas_budget = gas_ceiling + APPROVAL_GAS * approvals as u64;
         let total = (U256::from(gas_budget) * U256::from(fees.maximum))
             .checked_add(value)
             .context("contract fee budget overflow")?;
-        let balance_units = if units.is_zero() {
-            transferCall::abi_decode(&input)?.value
-        } else {
-            units
-        };
         Ok(ContractPlan {
             fee_budget: amount::format(total, 18),
             approvals,
@@ -261,7 +266,6 @@ impl Client {
             stage,
             deadline,
             initial_allowance,
-            balance_units,
             nonce: self
                 .provider
                 .get_transaction_count(sender)
@@ -305,16 +309,17 @@ impl Client {
             "contract plan expired; request a new quote"
         );
         self.run(async {
+            if let Some(spender) = quote.spender {
+                ensure!(
+                    Some(
+                        self.swap_allowance(quote.sender, quote.token, spender)
+                            .await?
+                    ) == quote.initial_allowance,
+                    "spender allowance changed since the quote; request a new quote"
+                );
+            }
             ensure!(
-                quote.units.is_zero()
-                    || self
-                        .swap_allowance(quote.sender, quote.token, quote.spender)
-                        .await?
-                        == quote.initial_allowance,
-                "spender allowance changed since the quote; request a new quote"
-            );
-            ensure!(
-                self.token_balance(quote.sender, quote.token).await? >= quote.balance_units,
+                self.token_balance(quote.sender, quote.token).await? >= quote.units,
                 "insufficient USDT balance"
             );
             Ok(())
@@ -322,8 +327,11 @@ impl Client {
         let mut nonce = quote.nonce;
         let mut last_transaction: Option<(&str, String)> = None;
         let result = (|| {
-            if quote.initial_allowance < quote.units {
-                if !quote.initial_allowance.is_zero() {
+            if let Some(allowance) = quote
+                .initial_allowance
+                .filter(|allowance| *allowance < quote.units)
+            {
+                if !allowance.is_zero() {
                     let hash = self.swap_stage(
                         quote,
                         &signer,
@@ -403,7 +411,7 @@ impl Client {
                 quote.token,
                 Bytes::from(
                     approveCall {
-                        spender: quote.spender,
+                        spender: quote.spender.context("approval has no spender")?,
                         value,
                     }
                     .abi_encode(),
@@ -532,12 +540,15 @@ impl Client {
         );
         if let Some(amount) = approval {
             ensure!(
-                self.run(self.swap_allowance(quote.sender, quote.token, quote.spender))
-                    .with_context(|| format!(
-                        "checking allowance after confirmed transaction {}",
-                        signed.txid
-                    ))?
-                    == amount,
+                self.run(self.swap_allowance(
+                    quote.sender,
+                    quote.token,
+                    quote.spender.context("approval has no spender")?
+                ))
+                .with_context(|| format!(
+                    "checking allowance after confirmed transaction {}",
+                    signed.txid
+                ))? == amount,
                 "approval receipt {} did not establish the requested allowance",
                 signed.txid
             );

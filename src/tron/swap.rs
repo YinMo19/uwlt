@@ -49,10 +49,10 @@ pub struct ContractPlan {
     pub fee_budget: String,
     pub approvals: usize,
     from: String,
-    router: String,
+    router: Option<String>,
     token: String,
     swap_output: Option<(u64, u64)>,
-    allowance: U256,
+    allowance: Option<U256>,
     deadline: u64,
     bandwidth_budget: u64,
     steps: Vec<Step>,
@@ -144,8 +144,8 @@ impl Client {
         ));
         let plan = self.prepare_sequence(
             from,
-            router,
-            allowance,
+            Some(router),
+            Some(allowance),
             deadline,
             steps,
             Some((amount, minimum)),
@@ -183,11 +183,11 @@ impl Client {
             "contract calldata has no function selector"
         );
         let from = address_hex(from)?;
-        let router = address_hex(&call.spender)?;
+        let router = call.spender.as_deref().map(address_hex).transpose()?;
         let destination = address_hex(&call.to)?;
         ensure!(
             abi_address(&from)? != Address::ZERO
-                && abi_address(&router)? != Address::ZERO
+                && router.as_deref().map(abi_address).transpose()? != Some(Address::ZERO)
                 && abi_address(&destination)? != Address::ZERO,
             "contract sender, spender and destination must be nonzero"
         );
@@ -199,19 +199,26 @@ impl Client {
             value <= i64::MAX as u64,
             "TRON call value exceeds signed protobuf range"
         );
-        let transfer = if call.amount.is_zero() {
+        ensure!(!call.amount.is_zero(), "bridge amount must be positive");
+        let transfer = if destination == self.token {
             ensure!(
-                destination == self.token && router == self.token && value == 0,
-                "zero approval amount is only valid for a direct USDT deposit"
+                router.is_none() && value == 0,
+                "direct USDT deposits cannot require an approval or native value"
             );
+            let prefix = call
+                .data
+                .get(..68)
+                .context("truncated direct USDT transfer")?;
             let transfer =
-                transferCall::abi_decode(&call.data).context("invalid direct USDT transfer")?;
+                transferCall::abi_decode(prefix).context("invalid direct USDT transfer")?;
             ensure!(
-                call.data == transfer.abi_encode()
+                prefix == transfer.abi_encode()
                     && transfer.recipient != Address::ZERO
-                    && !transfer.value.is_zero(),
+                    && transfer.value == call.amount,
                 "invalid direct USDT deposit amount or recipient"
             );
+            // Relay deposits append a routing memo. Keep it in Step.data;
+            // this tuple only checks the simulated Transfer event.
             let amount: u64 = transfer
                 .value
                 .try_into()
@@ -220,12 +227,15 @@ impl Client {
         } else {
             None
         };
-        let allowance = if transfer.is_some() {
-            U256::ZERO
+        let (allowance, mut steps) = if let Some(router) = &router {
+            let allowance = self.swap_allowance(&from, router)?;
+            (
+                Some(allowance),
+                self.approval_steps(router, call.amount, allowance)?,
+            )
         } else {
-            self.swap_allowance(&from, &router)?
+            (None, Vec::with_capacity(1))
         };
-        let mut steps = self.approval_steps(&router, call.amount, allowance)?;
         steps.push(Step {
             stage: "bridge",
             contract: destination,
@@ -277,8 +287,8 @@ impl Client {
     fn prepare_sequence(
         &self,
         from: String,
-        router: String,
-        allowance: U256,
+        router: Option<String>,
+        allowance: Option<U256>,
         deadline: u64,
         steps: Vec<Step>,
         swap_output: Option<(u64, u64)>,
@@ -347,11 +357,12 @@ impl Client {
             now()? < quote.deadline,
             "contract plan expired; request a new quote"
         );
-        ensure!(
-            quote.router == quote.token
-                || self.swap_allowance(&quote.from, &quote.router)? == quote.allowance,
-            "USDT allowance changed since quote; request a new quote"
-        );
+        if let Some(router) = &quote.router {
+            ensure!(
+                Some(self.swap_allowance(&quote.from, router)?) == quote.allowance,
+                "USDT allowance changed since quote; request a new quote"
+            );
+        }
         let mut last_txid = String::new();
         for step in &quote.steps {
             let result = (|| -> Result<String> {
@@ -363,7 +374,13 @@ impl Client {
                 let simulation = self.post("wallet/triggerconstantcontract", &request)?;
                 contract_success(&simulation)?;
                 if let Some(amount) = step.approval {
-                    approval_success(&simulation, &quote.from, &quote.router, &self.token, amount)?;
+                    approval_success(
+                        &simulation,
+                        &quote.from,
+                        quote.router.as_deref().context("approval has no spender")?,
+                        &self.token,
+                        amount,
+                    )?;
                 } else if let Some((recipient, amount)) = &step.transfer {
                     transfer_success(&simulation, &quote.from, recipient, &self.token, *amount)?;
                 } else if let Some((amount, minimum)) = quote.swap_output {
@@ -443,7 +460,10 @@ impl Client {
                 );
                 if let Some(amount) = step.approval {
                     let allowance = self
-                        .swap_allowance(&quote.from, &quote.router)
+                        .swap_allowance(
+                            &quote.from,
+                            quote.router.as_deref().context("approval has no spender")?,
+                        )
                         .with_context(|| {
                             format!("checking allowance after confirmed transaction {txid}")
                         })?;

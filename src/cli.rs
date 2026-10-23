@@ -87,9 +87,17 @@ enum Command {
     /// Query transaction execution and confirmation
     #[command(after_help = help::STATUS)]
     Status { txid: String },
-    /// Track an Allbridge transfer to its destination
+    /// Track a MetaMask-routed transfer to its destination
     #[command(after_help = help::BRIDGE_STATUS)]
-    BridgeStatus { txid: String },
+    BridgeStatus {
+        txid: String,
+        #[arg(long, value_enum, help = "Destination network printed by send")]
+        to_network: Network,
+        #[arg(long, help = "MetaMask bridge ID printed by send")]
+        bridge_id: String,
+        #[arg(long, help = "MetaMask request ID printed by send")]
+        request_id: String,
+    },
     /// Show the wallet name and private key
     #[command(after_help = help::KEY)]
     Key,
@@ -261,8 +269,19 @@ impl Cli {
                     store.get(wallet_name)?,
                 )?;
             }
-            Command::BridgeStatus { txid } => {
-                bridge::status(select_network()?, &txid)?;
+            Command::BridgeStatus {
+                txid,
+                to_network,
+                bridge_id,
+                request_id,
+            } => {
+                bridge::status(
+                    select_network()?,
+                    to_network,
+                    &bridge_id,
+                    &request_id,
+                    &txid,
+                )?;
             }
             Command::Status { txid } => {
                 query::status(
@@ -350,6 +369,44 @@ fn prompt_name() -> Result<String> {
         match wallet::validate_name(&name) {
             Ok(()) => return Ok(name),
             Err(error) => eprintln!("{error}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bridge_tracking_requires_both_networks_and_provider_identifiers() {
+        let args = [
+            "uwlt",
+            "--network",
+            "ethereum",
+            "bridge-status",
+            "source-hash",
+            "--to-network",
+            "mainnet",
+            "--bridge-id",
+            "relay",
+            "--request-id",
+            "request",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(matches!(cli.command, Command::BridgeStatus {
+            to_network: Network::Mainnet, bridge_id, request_id, ..
+        } if bridge_id == "relay" && request_id == "request"));
+        for missing in ["--to-network", "--bridge-id", "--request-id"] {
+            let index = args.iter().position(|arg| *arg == missing).unwrap();
+            let remaining: Vec<_> = args
+                .iter()
+                .enumerate()
+                .filter_map(|(i, arg)| (i != index && i != index + 1).then_some(*arg))
+                .collect();
+            assert!(
+                Cli::try_parse_from(remaining).is_err(),
+                "{missing} must be required"
+            );
         }
     }
 }

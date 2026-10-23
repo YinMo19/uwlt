@@ -83,7 +83,9 @@ impl Network {
             Self::Mainnet => Ok(crate::bridge::Chain::Tron),
             Self::Ethereum => Ok(crate::bridge::Chain::Ethereum),
             Self::Polygon => Ok(crate::bridge::Chain::Polygon),
-            Self::Nile | Self::Sepolia => bail!("Allbridge transfers require mainnet networks"),
+            Self::Nile | Self::Sepolia => {
+                bail!("MetaMask-routed transfers require mainnet networks")
+            }
         }
     }
 

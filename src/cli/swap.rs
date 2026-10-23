@@ -62,7 +62,7 @@ impl Swap {
     }
 }
 
-fn slippage(value: &str) -> Result<u16> {
+pub(super) fn slippage(value: &str) -> Result<u16> {
     let units = tron::parse_amount(value)?;
     ensure!(
         units < 100_000_000 && units % 10_000 == 0,

@@ -23,9 +23,12 @@ pub(super) struct Transfer {
     #[arg(
         long,
         value_enum,
-        help = "Destination network for an Allbridge transfer"
+        help = "Destination network for a MetaMask-routed transfer"
     )]
     to_network: Option<Network>,
+    #[arg(long = "slippage", requires = "to_network", value_parser = super::swap::slippage,
+        help = "Cross-chain maximum slippage in percent (default: 0.5)")]
+    slippage_bps: Option<u16>,
     #[arg(long, group = "native", help = "Send native TRX on TRON")]
     trx: bool,
     #[arg(long, group = "native", help = "Send native ETH on Ethereum")]
@@ -61,11 +64,15 @@ impl Transfer {
         {
             ensure!(
                 !self.trx && !self.eth && !self.pol,
-                "Allbridge transfers use USDT"
+                "MetaMask-routed transfers use USDT/USDT0"
             );
             ensure!(
                 self.fee_limit.is_none(),
                 "--fee-limit applies to same-chain TRON transfers"
+            );
+            ensure!(
+                token.is_none(),
+                "--token does not apply to cross-chain transfers"
             );
             return super::bridge::send(
                 network,
@@ -74,9 +81,14 @@ impl Transfer {
                 wallet,
                 &self.to,
                 &self.amount,
+                self.slippage_bps.unwrap_or(50),
                 self.dry_run,
             );
         }
+        ensure!(
+            self.slippage_bps.is_none(),
+            "--slippage requires a different destination network"
+        );
         match network.chain() {
             Chain::Tron(chain) => {
                 ensure!(!self.eth && !self.pol, "use --trx for TRON transfers");

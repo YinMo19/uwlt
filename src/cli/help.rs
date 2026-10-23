@@ -84,13 +84,20 @@ pub(super) const SEND: &str = cstr!(
     <bold>uwlt send</bold> 0.001 <bold>--network</bold> ethereum <bold>--eth --to</bold> savings
     <bold>uwlt send</bold> 5 <bold>--network</bold> mainnet <bold>--trx --to</bold> savings
 
-  Send USDT from Ethereum to TRON through Allbridge:
+  Send USDT from Ethereum to TRON through MetaMask routing:
     <bold>uwlt send</bold> 10 <bold>--network</bold> ethereum <bold>--to</bold> savings \
       <bold>--to-network</bold> mainnet
 
-  Send USDT from TRON to Ethereum through Allbridge:
+  Send USDT from TRON to Ethereum through MetaMask routing:
     <bold>uwlt send</bold> 10 <bold>--network</bold> mainnet <bold>--to</bold> savings \
       <bold>--to-network</bold> ethereum
+
+  Preview a cross-chain route with 0.5% maximum slippage:
+    <bold>uwlt send</bold> 100 <bold>--network</bold> ethereum <bold>--to</bold> savings \
+      <bold>--to-network</bold> mainnet <bold>--slippage</bold> 0.5 <bold>--dry-run</bold>
+
+  Quotes use the MetaMask routing service; keys and Touch ID signing stay in uwlt.
+  No MetaMask wallet or API key is required. Route availability is provider-dependent.
 
   Create the recipient wallet first with: <bold>uwlt create</bold> savings"#
 );
@@ -130,13 +137,17 @@ pub(super) const STATUS: &str = cstr!(
 
 pub(super) const BRIDGE_STATUS: &str = cstr!(
     r#"<bold><underline>Examples:</underline></bold>
-  Track an Allbridge transfer sent from Ethereum:
-    <bold>uwlt bridge-status</bold> SOURCE_TX_HASH <bold>--network</bold> ethereum
+  Track a MetaMask-routed transfer from Ethereum to TRON:
+    <bold>uwlt bridge-status</bold> SOURCE_TX_HASH <bold>--network</bold> ethereum \
+      <bold>--to-network</bold> mainnet <bold>--bridge-id</bold> BRIDGE_ID <bold>--request-id</bold> REQUEST_ID
 
-  Track an Allbridge transfer sent from TRON:
-    <bold>uwlt bridge-status</bold> SOURCE_TX_HASH <bold>--network</bold> mainnet
+  Track a MetaMask-routed transfer from TRON to Polygon:
+    <bold>uwlt bridge-status</bold> SOURCE_TX_HASH <bold>--network</bold> mainnet \
+      <bold>--to-network</bold> polygon <bold>--bridge-id</bold> BRIDGE_ID <bold>--request-id</bold> REQUEST_ID
 
-  Replace SOURCE_TX_HASH with the source transaction hash from send."#
+  Copy the complete tracking command printed immediately after source broadcast.
+  Tracking uses MetaMask's service; source confirmation alone does not prove delivery.
+  Failed or unknown status does not confirm a refund. Check both chains before retrying."#
 );
 
 pub(super) const KEY: &str = cstr!(

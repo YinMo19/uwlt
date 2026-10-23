@@ -1,39 +1,23 @@
-//! Native Allbridge Core transfers; no SDK runtime or remote transaction builder.
+//! MetaMask bridge routing; all transactions and approvals are signed locally.
 //!
-//! Protocol reference: allbridge-io/allbridge-core-js-sdk commit
-//! 18c19c84eb8b9fbdfb643874448daf34841bf14c, services/bridge/{utils,evm/index,trx/index}.ts
-//! and services/near-intents/index.ts. API: https://api.core.allbridge.io.
-//! OFT fees are deducted from the exact input, not added to its approval. NEAR
-//! Intents uses a one-shot token deposit, never a bridge approval. Both still
-//! require native currency for the source transaction(s).
+//! Trust boundary: token transfers and approvals are decoded exactly. Router calldata
+//! is opaque: MetaMask and its selected protocol remain trusted for the destination,
+//! recipient, minimum output, and deposit-address mapping. Envelope checks and exact
+//! local approvals do NOT prove those router semantics or guaranteed delivery.
+//! Uses the wallet backend's getQuote API, not a MetaMask wallet or signing service.
+//! Schema: github.com/MetaMask/core/tree/main/packages/bridge-controller/src/validators.
 mod amount;
 mod status;
+mod transaction;
 
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
-use alloy::{
-    primitives::{Address, B256, U256},
-    sol,
-    sol_types::SolCall,
-};
+use alloy::primitives::{Address, U256};
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::{blocking, header};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-
-const API: &str = "https://api.core.allbridge.io";
-const OFT: u8 = 5;
-
-sol! {
-    // Current OftBridge ABI, not the deprecated liquidity-pool swapAndBridge.
-    function bridge(
-        address tokenAddress, uint256 amount, bytes32 recipient,
-        uint256 destinationChainId, uint256 relayerFeeTokenAmount,
-        uint256 extraGasInDestinationToken, uint256 slippageBP
-    ) external payable;
-    function transfer(address recipient, uint256 amount) external;
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Chain {
@@ -59,11 +43,11 @@ impl Chain {
         }
     }
 
-    fn api_symbol(self) -> &'static str {
+    fn chain_id(self) -> &'static str {
         match self {
-            Self::Tron => "TRX",
-            Self::Ethereum => "ETH",
-            Self::Polygon => "POL",
+            Self::Tron => "728126428",
+            Self::Ethereum => "1",
+            Self::Polygon => "137",
         }
     }
 
@@ -78,14 +62,13 @@ impl Chain {
 
 pub struct ContractCall {
     pub token: String,
-    pub spender: String,
-    /// Exact OFT input including deducted fees; zero means a direct token deposit
-    /// with no approval (its exact debit is encoded in transfer calldata).
+    /// None means no new allowance instruction; never infer a spender from txTo.
+    pub spender: Option<String>,
+    /// Exact requested USDT input, including direct deposits and preapproved routes.
     pub amount: U256,
     pub to: String,
     pub data: Vec<u8>,
     pub value: U256,
-    /// A one-shot deposit must be broadcast before this Unix timestamp.
     pub expires_at: Option<u64>,
 }
 
@@ -97,23 +80,25 @@ pub struct Quote {
     pub amount: String,
     pub source_symbol: String,
     pub expected: String,
+    pub minimum: String,
     pub destination_symbol: String,
-    pub service_fee: String,
+    pub fees: Vec<String>,
     pub messenger: String,
     pub estimated_seconds: Option<u64>,
-    pub call: ContractCall,
-    deadline: Option<OffsetDateTime>,
+    pub request_id: String,
+    pub bridge_id: String,
+    pub slippage_bps: u16,
+    pub call: Option<ContractCall>,
+    deadline: u64,
 }
 
 impl Quote {
-    /// Call again after local key authorization, immediately before broadcasting.
+    /// Check again after local authorization, immediately before broadcasting.
     pub fn ensure_fresh(&self) -> Result<()> {
-        if let Some(deadline) = self.deadline {
-            ensure!(
-                OffsetDateTime::now_utc() < deadline,
-                "Allbridge deposit quote expired; request a new transfer quote (nothing was sent)"
-            );
-        }
+        ensure!(
+            now()? < self.deadline,
+            "MetaMask quote expired; request a new transfer quote (nothing was sent)"
+        );
         Ok(())
     }
 }
@@ -126,58 +111,22 @@ pub struct Status {
 
 pub struct Client {
     http: blocking::Client,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ChainInfo {
-    chain_id: u64,
-    tokens: Vec<TokenInfo>,
-    oft_bridge_address: Option<String>,
-    #[serde(default)]
-    transfer_time: HashMap<String, HashMap<String, Option<u64>>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TokenInfo {
-    token_address: String,
-    symbol: String,
-    decimals: u8,
-    oft_id: Option<String>,
-    near_intents: Option<Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RelayFee {
-    fee: String,
-    source_native_token_price: Option<String>,
-    admin_fee_share_with_extras: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Deposit {
-    deposit_address: String,
-    deposit_memo: Option<String>,
-    amount_in: String,
-    amount_out: String,
-    min_amount_out: String,
-    deadline: String,
-    time_estimate: u64,
+    api: &'static str,
 }
 
 impl Client {
     pub fn new() -> Result<Self> {
+        // This wallet-backend endpoint currently accepts requests without an API key.
+        // Identify uwlt honestly rather than impersonating the MetaMask extension.
         Ok(Self {
             http: blocking::Client::builder()
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(45))
                 .redirect(reqwest::redirect::Policy::none())
                 .retry(reqwest::retry::never())
                 .user_agent(concat!("uwlt/", env!("CARGO_PKG_VERSION")))
                 .build()
-                .context("initializing Allbridge HTTP client")?,
+                .context("initializing MetaMask HTTP client")?,
+            api: "https://bridge.api.cx.metamask.io",
         })
     }
 
@@ -188,323 +137,374 @@ impl Client {
         from: &str,
         to: &str,
         input: &str,
+        slippage_bps: u16,
+        dry_run: bool,
     ) -> Result<Quote> {
         ensure!(
             source != destination,
-            "choose different networks for a cross-chain transfer"
+            "bridge requires different source and destination networks"
         );
-        address(source, from).context("invalid bridge sender")?;
-        let recipient = address(destination, to).context("invalid bridge recipient")?;
+        address(source, from)?;
+        address(destination, to)?;
+        ensure!(
+            slippage_bps < 10_000,
+            "slippage must be between 0 and 9999 basis points"
+        );
         let units = amount::parse(input)?;
-        let metadata: HashMap<String, ChainInfo> = self.get("/token-info?filter=all")?;
-        let source_info = metadata
-            .get(source.api_symbol())
-            .context("source network is not listed by Allbridge")?;
-        let destination_info = metadata
-            .get(destination.api_symbol())
-            .context("destination network is not listed by Allbridge")?;
-        let source_token = token(source, source_info)?;
-        let destination_token = token(destination, destination_info)?;
-        let mut quote = Quote {
+        let amount = units.to_string();
+        let slippage = amount::slippage(slippage_bps);
+        let params = [
+            ("srcChainId", source.chain_id()),
+            ("destChainId", destination.chain_id()),
+            ("srcTokenAddress", source.token()),
+            ("destTokenAddress", destination.token()),
+            ("srcTokenAmount", amount.as_str()),
+            ("walletAddress", from),
+            ("destWalletAddress", to),
+            ("slippage", slippage.as_str()),
+            ("insufficientBal", if dry_run { "true" } else { "false" }),
+            ("resetApproval", "false"),
+            ("gasIncluded", "false"),
+            ("gasIncluded7702", "false"),
+        ];
+        // Include request latency in the local freshness window.
+        let requested_at = now()?;
+        let response: Value = self.get("/getQuote", &params)?;
+        select_quote(
+            &response,
             source,
             destination,
-            sender: from.to_owned(),
-            recipient: to.to_owned(),
-            amount: amount::format(units),
-            source_symbol: source_token.symbol.clone(),
-            expected: String::new(),
-            destination_symbol: destination_token.symbol.clone(),
-            service_fee: String::new(),
-            messenger: String::new(),
-            estimated_seconds: None,
-            call: ContractCall {
-                expires_at: None,
-                token: source_token.token_address.clone(),
-                spender: String::new(),
-                amount: units,
-                to: String::new(),
-                data: Vec::new(),
-                value: U256::ZERO,
-            },
-            deadline: None,
-        };
-        let oft_supported = source_info.oft_bridge_address.is_some()
-            && destination_info.oft_bridge_address.is_some()
-            && source_token
-                .oft_id
-                .as_ref()
-                .is_some_and(|id| !id.is_empty() && Some(id) == destination_token.oft_id.as_ref());
-        if oft_supported {
-            self.oft_quote(
-                &mut quote,
-                source_info,
-                destination_info,
-                source_token,
-                recipient,
-                units,
-            )?;
-        } else if source_token.near_intents.is_some() && destination_token.near_intents.is_some() {
-            self.deposit_quote(
-                &mut quote,
-                source_info,
-                destination_info,
-                source_token,
-                destination_token,
-                units,
-            )?;
-        } else {
-            bail!(
-                "Allbridge currently lists no supported USDT route from {} to {}; choose another network or bridge provider",
-                source.label(),
-                destination.label()
-            );
-        }
-        quote.ensure_fresh()?;
-        Ok(quote)
-    }
-
-    fn oft_quote(
-        &self,
-        quote: &mut Quote,
-        source: &ChainInfo,
-        destination: &ChainInfo,
-        token: &TokenInfo,
-        recipient: Address,
-        units: U256,
-    ) -> Result<()> {
-        let bridge = source
-            .oft_bridge_address
-            .as_deref()
-            .context("missing OFT bridge")?;
-        let bridge_address =
-            address(quote.source, bridge).context("invalid Allbridge source contract")?;
-        let token_address = address(quote.source, &token.token_address)?;
-        ensure!(
-            bridge_address != token_address,
-            "Allbridge bridge address equals token address"
-        );
-        address(
-            quote.destination,
-            destination
-                .oft_bridge_address
-                .as_deref()
-                .context("missing destination OFT bridge")?,
-        )
-        .context("invalid Allbridge destination contract")?;
-        let fee: RelayFee = self.post(
-            "/receive-fee",
-            &json!({
-                "sourceChainId": source.chain_id,
-                "destinationChainId": destination.chain_id,
-                "messenger": OFT,
-                "sourceToken": token.token_address,
-            }),
-        )?;
-        let stable_fee = amount::stable_fee(
-            &fee.fee,
-            fee.source_native_token_price
-                .as_deref()
-                .context("Allbridge does not offer stablecoin fee payment for this route")?,
-            if quote.source == Chain::Tron { 6 } else { 18 },
-        )?;
-        ensure!(
-            units > stable_fee,
-            "amount must exceed the {} {} relay fee; increase the amount",
-            amount::format(stable_fee),
-            token.symbol
-        );
-        // The contract first deducts relay tokens, then the admin/OFT fee.
-        let expected = amount::received(
-            units - stable_fee,
-            fee.admin_fee_share_with_extras
-                .as_deref()
-                .context("Allbridge did not quote an OFT admin fee")?,
-        )?;
-        ensure!(
-            expected > U256::ZERO,
-            "amount is too small after Allbridge fees"
-        );
-        quote.expected = amount::format(expected);
-        quote.service_fee = format!(
-            "~{} {} deducted from input ({} relay + ~{} protocol); source gas additional; OFT slippage limit 0.1%; no destination gas top-up",
-            amount::format(units - expected),
-            token.symbol,
-            amount::format(stable_fee),
-            amount::format(units - stable_fee - expected)
-        );
-        quote.messenger = "Allbridge Core / LayerZero OFT".to_owned();
-        quote.estimated_seconds = source
-            .transfer_time
-            .get(quote.destination.api_symbol())
-            .and_then(|times| times.get("oft"))
-            .copied()
-            .flatten()
-            .map(|ms| ms.div_ceil(1000));
-        quote.call.spender = bridge.to_owned();
-        quote.call.to = bridge.to_owned();
-        quote.call.data = bridgeCall {
-            tokenAddress: token_address,
-            amount: units,
-            recipient: B256::from(recipient.into_word()),
-            destinationChainId: U256::from(destination.chain_id),
-            relayerFeeTokenAmount: stable_fee,
-            extraGasInDestinationToken: U256::ZERO,
-            slippageBP: U256::from(10),
-        }
-        .abi_encode();
-        Ok(())
-    }
-
-    fn deposit_quote(
-        &self,
-        quote: &mut Quote,
-        source: &ChainInfo,
-        destination: &ChainInfo,
-        source_token: &TokenInfo,
-        destination_token: &TokenInfo,
-        units: U256,
-    ) -> Result<()> {
-        // This is the SDK's buildSendTransaction flow. A deposit reservation is
-        // harmless in preview: only signing/broadcasting its token transfer funds it.
-        let deposit: Deposit = self.post("/near-intents/deposit", &json!({
-            "sourceChainId": source.chain_id,
-            "sourceToken": source_token.token_address,
-            "destinationChainId": destination.chain_id,
-            "destinationToken": destination_token.token_address,
-            "amount": units.to_string(),
-            "swapType": "EXACT_INPUT",
-            "recipient": quote.recipient,
-            "refundTo": quote.sender,
-        })).with_context(|| format!(
-            "Allbridge NEAR Intents route {} → {} unavailable; choose another network/provider or try later (Polygon USDT0 has no Allbridge OFT route)",
-            quote.source.label(), quote.destination.label()
-        ))?;
-        ensure!(
-            deposit.deposit_memo.as_deref().is_none_or(str::is_empty),
-            "Allbridge returned an unsupported deposit memo"
-        );
-        ensure!(
-            integer(&deposit.amount_in)? == units,
-            "Allbridge deposit input differs from requested amount"
-        );
-        let expected = integer(&deposit.amount_out)?;
-        let minimum = integer(&deposit.min_amount_out)?;
-        ensure!(
-            minimum > U256::ZERO && minimum <= expected,
-            "invalid Allbridge minimum receive amount"
-        );
-        let deposit_address = address(quote.source, &deposit.deposit_address)
-            .context("invalid Allbridge deposit address")?;
-        ensure!(
-            deposit_address != address(quote.source, &quote.sender)?,
-            "Allbridge deposit address equals sender"
-        );
-        ensure!(
-            deposit_address != address(quote.source, &source_token.token_address)?,
-            "Allbridge deposit address equals token contract"
-        );
-        let deadline = OffsetDateTime::parse(&deposit.deadline, &Rfc3339)
-            .context("invalid Allbridge deposit deadline")?;
-        quote.deadline = Some(deadline);
-        quote.expected = amount::format(expected);
-        let cost = if units >= expected {
-            format!(
-                "~{} {} deducted from input (fees and exchange-rate impact)",
-                amount::format(units - expected),
-                source_token.symbol
-            )
-        } else {
-            "included in the market-priced output (output exceeds input)".to_owned()
-        };
-        quote.service_fee = format!(
-            "{cost}; minimum {} {}; source gas additional; deposit expires {}; refunds return to sender and may deduct fees",
-            amount::format(minimum),
-            destination_token.symbol,
-            deposit.deadline
-        );
-        quote.messenger = "Allbridge Core / NEAR Intents".to_owned();
-        quote.estimated_seconds = Some(deposit.time_estimate);
-        quote.call.amount = U256::ZERO;
-        quote.call.to = source_token.token_address.clone();
-        quote.call.spender = source_token.token_address.clone();
-        quote.call.data = transferCall {
-            recipient: deposit_address,
-            amount: units,
-        }
-        .abi_encode();
-        quote.call.expires_at = Some(
-            u64::try_from(deadline.unix_timestamp())
-                .context("Allbridge deposit deadline predates Unix epoch")?,
-        );
-        Ok(())
-    }
-
-    fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.response(
-            self.http
-                .get(format!("{API}{path}"))
-                .header(header::ACCEPT, "application/json")
-                .send()?,
-            path,
+            from,
+            to,
+            units,
+            slippage_bps,
+            dry_run,
+            requested_at,
         )
     }
 
-    fn post<T: serde::de::DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
-        self.response(
-            self.http.post(format!("{API}{path}")).json(body).send()?,
-            path,
-        )
-    }
-
-    fn response<T: serde::de::DeserializeOwned>(
-        &self,
-        response: blocking::Response,
-        path: &str,
-    ) -> Result<T> {
+    fn get<T: DeserializeOwned>(&self, path: &str, params: &[(&str, &str)]) -> Result<T> {
+        let response = self
+            .http
+            .get(format!("{}{path}", self.api))
+            .header(header::ACCEPT, "application/json")
+            .header("X-Client-Id", "uwlt")
+            .header("Client-Version", env!("CARGO_PKG_VERSION"))
+            .query(params)
+            .send()
+            // Keep addresses and amounts out of transport errors' query URLs.
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "MetaMask {path} request failed{} (request URL omitted)",
+                    if error.is_timeout() {
+                        ": timed out"
+                    } else {
+                        ""
+                    }
+                )
+            })?;
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().unwrap_or_default();
-            bail!("Allbridge {path}: HTTP {status}: {body}");
+            let advice = match status.as_u16() {
+                401 | 403 => {
+                    "the MetaMask wallet backend denied uwlt access; no API key is configured by this client"
+                }
+                429 => "the MetaMask wallet backend rate limit was reached; try again later",
+                _ => "the MetaMask wallet backend could not serve this request",
+            };
+            bail!("MetaMask {path}: HTTP {status}; {advice} (response body omitted)");
         }
-        response
-            .json()
-            .with_context(|| format!("invalid Allbridge {path} response"))
+        let body = response
+            .text()
+            .map_err(|_| anyhow::anyhow!("reading MetaMask {path} response failed"))?;
+        serde_json::from_str(&body).map_err(|_| anyhow::anyhow!("invalid MetaMask {path} response"))
     }
 }
 
-fn token(chain: Chain, info: &ChainInfo) -> Result<&TokenInfo> {
-    let token = info
-        .tokens
-        .iter()
-        .find(|token| {
-            if chain == Chain::Tron {
-                token.token_address == chain.token()
-            } else {
-                token.token_address.eq_ignore_ascii_case(chain.token())
+#[allow(clippy::too_many_arguments)]
+fn select_quote(
+    response: &Value,
+    source: Chain,
+    destination: Chain,
+    from: &str,
+    to: &str,
+    units: U256,
+    slippage_bps: u16,
+    dry_run: bool,
+    requested_at: u64,
+) -> Result<Quote> {
+    let routes = response
+        .as_array()
+        .context("invalid MetaMask getQuote response: expected a route array")?;
+    ensure!(
+        !routes.is_empty(),
+        "MetaMask returned no routes for this amount and network pair"
+    );
+    let deadline = requested_at
+        .checked_add(90)
+        .context("quote expiry overflow")?;
+    let mut best: Option<(Quote, U256, U256)> = None;
+    let mut rejections = Vec::new();
+    for (index, route) in routes.iter().enumerate() {
+        match parse_quote(
+            route,
+            source,
+            destination,
+            from,
+            to,
+            units,
+            slippage_bps,
+            dry_run,
+            deadline,
+        ) {
+            Ok(candidate) => {
+                let replace = best.as_ref().is_none_or(|current| {
+                    (candidate.1, candidate.2) > (current.1, current.2)
+                        || ((candidate.1, candidate.2) == (current.1, current.2)
+                            && (&candidate.0.bridge_id, &candidate.0.request_id)
+                                < (&current.0.bridge_id, &current.0.request_id))
+                });
+                if replace {
+                    best = Some(candidate);
+                }
             }
+            Err(error) => rejections.push(format!("route {}: {error:#}", index + 1)),
+        }
+    }
+    best.map(|(quote, _, _)| quote).with_context(|| {
+        format!(
+            "MetaMask returned no compatible routes: {}",
+            rejections.join("; ")
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_quote(
+    response: &Value,
+    source: Chain,
+    destination: Chain,
+    from: &str,
+    to: &str,
+    units: U256,
+    slippage_bps: u16,
+    dry_run: bool,
+    mut deadline: u64,
+) -> Result<(Quote, U256, U256)> {
+    let route = &response["quote"];
+    // Request IDs are protocol-specific (hashes and opaque strings as well as UUIDs).
+    let request_id = text(route, "requestId")?;
+    let bridge_id = text(route, "bridgeId")?;
+    validate_chain(&route["srcChainId"], source)?;
+    validate_chain(&route["destChainId"], destination)?;
+    validate_token(&route["srcAsset"], source)?;
+    validate_token(&route["destAsset"], destination)?;
+    ensure!(
+        address(source, text(route, "walletAddress")?)? == address(source, from)?,
+        "MetaMask source wallet mismatch"
+    );
+    ensure!(
+        address(destination, text(route, "destWalletAddress")?)? == address(destination, to)?,
+        "MetaMask destination wallet mismatch"
+    );
+    for field in ["gasIncluded", "gasIncluded7702", "gasSponsored"] {
+        ensure!(
+            route[field].is_null() || route[field] == false,
+            "MetaMask {field} execution is unsupported by local signing"
+        );
+    }
+    ensure!(
+        route["intent"].is_null(),
+        "MetaMask route requires unsupported intent signing"
+    );
+    ensure!(
+        route["refuel"].is_null(),
+        "MetaMask route requires unsupported destination gas refueling"
+    );
+    let fees = quote_fees(route, source, units)?;
+    let expected = amount::integer(text(route, "destTokenAmount")?)?;
+    let minimum = amount::integer(text(route, "minDestTokenAmount")?)?;
+    ensure!(
+        !minimum.is_zero() && minimum <= expected,
+        "invalid MetaMask output or minimum receive amount"
+    );
+    ensure!(
+        minimum >= amount::minimum(expected, slippage_bps)?,
+        "MetaMask minimum receive amount exceeds requested slippage ({slippage_bps} bps)"
+    );
+    if !route["slippage"].is_null() {
+        let returned = route["slippage"]
+            .as_f64()
+            .context("invalid MetaMask slippage")?;
+        ensure!(
+            returned >= 0.0 && returned <= f64::from(slippage_bps) / 100.0,
+            "MetaMask route slippage exceeds requested slippage"
+        );
+    }
+    let bridges = route["bridges"]
+        .as_array()
+        .context("missing MetaMask bridges")?;
+    ensure!(!bridges.is_empty(), "MetaMask route has no bridge");
+    let messenger = bridges
+        .iter()
+        .map(|bridge| {
+            let name = bridge.as_str().context("invalid MetaMask bridge name")?;
+            ensure!(
+                !name.trim().is_empty() && !name.chars().any(char::is_control),
+                "invalid MetaMask bridge name"
+            );
+            Ok(name)
         })
-        .with_context(|| {
-            format!(
-                "Allbridge does not list the wallet's canonical USDT contract on {}",
-                chain.label()
-            )
-        })?;
-    ensure!(
-        token.decimals == 6,
-        "Allbridge returned unexpected USDT decimals"
-    );
-    Ok(token)
+        .collect::<Result<Vec<_>>>()?
+        .join(" -> ");
+    protocol_deadline(response, &mut deadline)?;
+    protocol_deadline(route, &mut deadline)?;
+    protocol_deadline(&response["trade"], &mut deadline)?;
+    // Dry-run validates the same executable envelope without signing or broadcasting.
+    let call = transaction::normalize(response, source, from, units, deadline)?;
+    let mut fees = fees;
+    if !call.value.is_zero() {
+        fees.push(format!(
+            "{} {} | additional native value sent with trade",
+            amount::format_units(call.value, if source == Chain::Tron { 6 } else { 18 }),
+            source.native_symbol()
+        ));
+    }
+    fees.push(format!(
+        "{} network gas is additional; estimated locally before execution",
+        source.native_symbol()
+    ));
+    let estimated_seconds = response["estimatedProcessingTimeInSeconds"]
+        .as_u64()
+        .context("invalid MetaMask estimated processing time")?;
+    let quote = Quote {
+        source,
+        destination,
+        sender: from.to_owned(),
+        recipient: to.to_owned(),
+        amount: amount::format(units),
+        source_symbol: "USDT".to_owned(),
+        expected: amount::format(expected),
+        minimum: amount::format(minimum),
+        destination_symbol: "USDT".to_owned(),
+        fees,
+        messenger,
+        estimated_seconds: Some(estimated_seconds),
+        request_id: request_id.to_owned(),
+        bridge_id: bridge_id.to_owned(),
+        slippage_bps,
+        call: if dry_run { None } else { Some(call) },
+        deadline,
+    };
+    quote.ensure_fresh()?;
+    Ok((quote, expected, minimum))
 }
 
-fn integer(input: &str) -> Result<U256> {
+fn validate_chain(value: &Value, chain: Chain) -> Result<()> {
     ensure!(
-        !input.is_empty() && input.bytes().all(|b| b.is_ascii_digit()),
-        "invalid integer token amount"
+        value.as_u64() == Some(chain.chain_id().parse::<u64>()?),
+        "MetaMask chain ID mismatch"
     );
-    U256::from_str_radix(input, 10).context("token amount exceeds uint256")
+    Ok(())
 }
 
-/// SDK tronAddressToEthAddress strips 0x41 BEFORE left-padding to bytes32.
+fn validate_token(token: &Value, chain: Chain) -> Result<()> {
+    validate_chain(&token["chainId"], chain)?;
+    ensure!(
+        address(chain, text(token, "address")?)? == address(chain, chain.token())?,
+        "MetaMask token is not configured USDT"
+    );
+    ensure!(
+        token["decimals"].as_u64() == Some(6),
+        "MetaMask returned unexpected USDT decimals"
+    );
+    Ok(())
+}
+
+fn quote_fees(route: &Value, source: Chain, units: U256) -> Result<Vec<String>> {
+    let fee_data = route["feeData"]
+        .as_object()
+        .context("missing MetaMask fee data")?;
+    for (kind, fee) in fee_data {
+        match kind.as_str() {
+            "metabridge" => {}
+            "txFee" => ensure!(
+                amount::integer(text(fee, "amount")?)?.is_zero(),
+                "MetaMask route requires unsupported gas-included token fees"
+            ),
+            _ => bail!("unsupported MetaMask fee category: {kind}"),
+        }
+    }
+    let fee = &route["feeData"]["metabridge"];
+    validate_token(&fee["asset"], source).context("invalid MetaMask input fee asset")?;
+    let fee_units = amount::integer(text(fee, "amount")?)?;
+    let routed_units = amount::integer(text(route, "srcTokenAmount")?)?;
+    ensure!(
+        !routed_units.is_zero() && routed_units.checked_add(fee_units) == Some(units),
+        "MetaMask routed input plus metabridge fee does not equal the requested USDT amount"
+    );
+    // srcTokenAmount excludes this fee, but destTokenAmount is already net of it.
+    // Do not add feeUsd or subtract this fee from the destination amount again.
+    Ok(vec![
+        format!(
+            "{} USDT | MetaMask fee included in requested input",
+            amount::format(fee_units)
+        ),
+        "Provider costs and price impact are already reflected in quoted output".to_owned(),
+    ])
+}
+
+fn protocol_deadline(value: &Value, deadline: &mut u64) -> Result<()> {
+    for field in ["deadline", "expiresAt", "expiry"] {
+        let item = &value[field];
+        if item.is_null() {
+            continue;
+        }
+        let timestamp = if let Some(value) = item.as_u64() {
+            value
+        } else if let Some(value) = item.as_str() {
+            if value.bytes().all(|b| b.is_ascii_digit()) {
+                value.parse::<u64>().context("invalid MetaMask expiry")?
+            } else {
+                OffsetDateTime::parse(value, &Rfc3339)
+                    .context("invalid MetaMask expiry")?
+                    .unix_timestamp()
+                    .try_into()
+                    .context("MetaMask expiry predates Unix epoch")?
+            }
+        } else {
+            bail!("invalid MetaMask expiry");
+        };
+        let timestamp = if timestamp >= 1_000_000_000_000 {
+            timestamp / 1000
+        } else {
+            timestamp
+        };
+        *deadline = (*deadline).min(timestamp);
+    }
+    // TRON raw_data.expiration belongs to the discarded remote envelope. The local
+    // executor rebuilds timestamp, expiration, block references and fee limit.
+    Ok(())
+}
+
+fn now() -> Result<u64> {
+    OffsetDateTime::now_utc()
+        .unix_timestamp()
+        .try_into()
+        .context("system time predates Unix epoch")
+}
+
+fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
+    let text = value[field]
+        .as_str()
+        .with_context(|| format!("missing MetaMask {field}"))?;
+    ensure!(
+        !text.trim().is_empty() && !text.chars().any(char::is_control),
+        "invalid MetaMask {field}"
+    );
+    Ok(text)
+}
+
 fn address(chain: Chain, input: &str) -> Result<Address> {
     let address = if chain == Chain::Tron {
         let bytes = bs58::decode(input)
@@ -525,7 +525,227 @@ fn address(chain: Chain, input: &str) -> Result<Address> {
     };
     ensure!(
         address != Address::ZERO,
-        "zero address is not a valid bridge recipient or contract"
+        "zero address is not valid for a bridge transfer"
     );
     Ok(address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const FROM: &str = "0x6f33bb1763eebead07cf8815a62fcd7b30311fa3";
+    const TO: &str = "TGmhZwFoCZYBcbJt82TmKQ3HXCmcV2UrGT";
+
+    fn token(chain: Chain) -> Value {
+        json!({
+            "chainId": chain.chain_id().parse::<u64>().unwrap(),
+            "address": chain.token(), "symbol": "USDT", "decimals": 6
+        })
+    }
+
+    fn response() -> Value {
+        json!({
+            "quote": {
+                "requestId": "tx64c-provider-specific-id", "bridgeId": "test-provider",
+                "srcChainId": 1, "destChainId": 728126428,
+                "srcAsset": token(Chain::Ethereum), "destAsset": token(Chain::Tron),
+                "srcTokenAmount": "99125000",
+                "destTokenAmount": "98177317", "minDestTokenAmount": "97686430",
+                "walletAddress": FROM, "destWalletAddress": TO,
+                "slippage": 0.5, "gasIncluded": false, "gasIncluded7702": false,
+                "bridges": ["Test bridge"],
+                "feeData": {
+                    "metabridge": {
+                        "asset": token(Chain::Ethereum), "amount": "875000"
+                    }
+                }
+            },
+            "trade": {
+                "chainId": 1, "from": FROM, "to": Chain::Ethereum.token(),
+                "value": "0x0",
+                "data": format!(
+                    "0xa9059cbb{:0>64}{:064x}",
+                    "2222222222222222222222222222222222222222", 100_000_000u64
+                )
+            },
+            "estimatedProcessingTimeInSeconds": 120
+        })
+    }
+
+    fn select(response: &Value, dry_run: bool, requested_at: u64) -> Result<Quote> {
+        select_quote(
+            response,
+            Chain::Ethereum,
+            Chain::Tron,
+            FROM,
+            TO,
+            U256::from(100_000_000),
+            50,
+            dry_run,
+            requested_at,
+        )
+    }
+
+    fn parse(response: Value, dry_run: bool) -> Result<Quote> {
+        select(&json!([response]), dry_run, now()?)
+    }
+
+    #[test]
+    fn net_input_fee_is_not_charged_or_subtracted_twice() {
+        let quote = parse(response(), false).unwrap();
+        assert_eq!(quote.amount, "100");
+        assert_eq!(quote.expected, "98.177317");
+        assert_eq!(quote.minimum, "97.68643");
+        assert_eq!(
+            quote.fees[0],
+            "0.875 USDT | MetaMask fee included in requested input"
+        );
+        assert_eq!(quote.request_id, "tx64c-provider-specific-id");
+        assert_eq!(quote.bridge_id, "test-provider");
+        assert_eq!(quote.messenger, "Test bridge");
+        assert_eq!(quote.call.unwrap().amount, U256::from(100_000_000));
+        assert!(parse(response(), true).unwrap().call.is_none());
+    }
+
+    #[test]
+    fn malformed_metadata_and_wallets_are_rejected() {
+        for (field, value) in [
+            ("srcChainId", json!(137)),
+            ("destChainId", json!("728126428")),
+            (
+                "walletAddress",
+                json!("0x2222222222222222222222222222222222222222"),
+            ),
+            ("destWalletAddress", json!(FROM)),
+            ("requestId", json!("")),
+            ("bridgeId", json!("bad\nid")),
+            ("bridges", json!([])),
+        ] {
+            let mut candidate = response();
+            candidate["quote"][field] = value;
+            assert!(parse(candidate, true).is_err(), "{field}");
+        }
+        for (field, value) in [
+            ("chainId", json!(137)),
+            (
+                "address",
+                json!("0x2222222222222222222222222222222222222222"),
+            ),
+            ("decimals", json!(18)),
+        ] {
+            let mut candidate = response();
+            candidate["quote"]["srcAsset"][field] = value;
+            assert!(parse(candidate, true).is_err(), "{field}");
+        }
+        for chain in [Chain::Tron, Chain::Ethereum, Chain::Polygon] {
+            validate_token(&token(chain), chain).unwrap();
+        }
+    }
+
+    #[test]
+    fn input_accounting_rejects_missing_extra_and_overflowing_fees() {
+        for input in ["100000000", "0", "-1", "1.2", &U256::MAX.to_string()] {
+            let mut candidate = response();
+            candidate["quote"]["srcTokenAmount"] = json!(input);
+            assert!(parse(candidate, true).is_err(), "{input}");
+        }
+        let mut candidate = response();
+        candidate["quote"]["feeData"]["metabridge"]["asset"] = token(Chain::Polygon);
+        assert!(parse(candidate, true).is_err());
+        let mut candidate = response();
+        candidate["quote"]["feeData"] = json!({});
+        assert!(parse(candidate, true).is_err());
+        let mut candidate = response();
+        candidate["quote"]["feeData"]["txFee"] = json!({"amount": "1"});
+        assert!(parse(candidate, true).is_err());
+        let mut candidate = response();
+        candidate["quote"]["feeData"]["unknown"] = json!({"amount": "1"});
+        assert!(parse(candidate, true).is_err());
+        let mut candidate = response();
+        candidate["quote"]["srcTokenAmount"] = json!("100000000");
+        candidate["quote"]["feeData"]["metabridge"]["amount"] = json!("0");
+        assert!(parse(candidate, true).is_ok());
+    }
+
+    #[test]
+    fn slippage_uses_provider_minimum_and_allows_only_atomic_rounding() {
+        assert!(parse(response(), true).is_ok());
+        for minimum in ["0", "1", "97686429", "98177318", "-1", "1.2"] {
+            let mut candidate = response();
+            candidate["quote"]["minDestTokenAmount"] = json!(minimum);
+            assert!(parse(candidate, true).is_err(), "{minimum}");
+        }
+        let mut candidate = response();
+        candidate["quote"]["minDestTokenAmount"] = Value::Null;
+        assert!(parse(candidate, true).is_err());
+        let mut candidate = response();
+        candidate["quote"]["slippage"] = json!(2.0);
+        assert!(parse(candidate, true).is_err());
+    }
+
+    #[test]
+    fn selection_prefers_highest_compatible_output_then_minimum() {
+        let mut lower = response();
+        lower["quote"]["destTokenAmount"] = json!("98000000");
+        lower["quote"]["minDestTokenAmount"] = json!("97600000");
+        let mut unsafe_best = response();
+        unsafe_best["quote"]["destTokenAmount"] = json!("100000000");
+        unsafe_best["quote"]["minDestTokenAmount"] = json!("98000000");
+        let mut unexecutable = response();
+        unexecutable["quote"]["destTokenAmount"] = json!("100000000");
+        unexecutable["quote"]["minDestTokenAmount"] = json!("99500000");
+        unexecutable["trade"] = json!({"typedData": {}});
+        let mut preferred = response();
+        preferred["quote"]["bridgeId"] = json!("preferred");
+        preferred["quote"]["minDestTokenAmount"] = json!("98000000");
+        let quotes = json!([lower, unsafe_best, response(), unexecutable, preferred]);
+        for dry_run in [true, false] {
+            let quote = select(&quotes, dry_run, now().unwrap()).unwrap();
+            assert_eq!(quote.bridge_id, "preferred");
+            assert_eq!(quote.expected, "98.177317");
+            assert_eq!(quote.minimum, "98");
+        }
+        let mut tied = response();
+        tied["quote"]["bridgeId"] = json!("a-provider");
+        for quotes in [json!([response(), tied]), json!([tied, response()])] {
+            assert_eq!(
+                select(&quotes, true, now().unwrap()).unwrap().bridge_id,
+                "a-provider"
+            );
+        }
+    }
+
+    #[test]
+    fn unavailable_routes_explain_rejections_and_never_become_fresh_again() {
+        assert!(select(&json!([]), true, now().unwrap()).is_err());
+        assert!(select(&json!({"error": "unavailable"}), true, now().unwrap()).is_err());
+        let mut candidate = response();
+        candidate["quote"]["minDestTokenAmount"] = json!("1");
+        let error = parse(candidate, true).err().unwrap().to_string();
+        assert!(error.contains("route 1"));
+        assert!(error.contains("slippage"));
+        assert!(select(&json!([response()]), true, now().unwrap() - 91).is_err());
+        let mut candidate = response();
+        candidate["quote"]["deadline"] = json!("2000-01-01T00:00:00Z");
+        assert!(parse(candidate, true).is_err());
+        let mut deadline = u64::MAX;
+        protocol_deadline(&json!({"expiresAt": 1800000000000u64}), &mut deadline).unwrap();
+        assert_eq!(deadline, 1_800_000_000);
+    }
+
+    #[test]
+    fn alternate_execution_modes_are_not_silently_downgraded() {
+        for field in ["gasIncluded", "gasIncluded7702", "gasSponsored"] {
+            let mut candidate = response();
+            candidate["quote"][field] = json!(true);
+            assert!(parse(candidate, true).is_err(), "{field}");
+        }
+        for field in ["intent", "refuel"] {
+            let mut candidate = response();
+            candidate["quote"][field] = json!({});
+            assert!(parse(candidate, true).is_err(), "{field}");
+        }
+    }
 }
