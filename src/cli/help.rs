@@ -46,8 +46,8 @@ pub(super) const SYNC: &str = cstr!(
   Sync wallets and display their Polygon addresses:
     <bold>uwlt sync --network</bold> polygon
 
-  Sync wallets and display their TRON addresses:
-    <bold>uwlt sync --network</bold> mainnet"#
+  Derive and synchronize Solana addresses for existing wallets (Touch ID):
+    <bold>uwlt sync --network</bold> solana"#
 );
 
 pub(super) const ADDRESS: &str = cstr!(
@@ -55,8 +55,8 @@ pub(super) const ADDRESS: &str = cstr!(
   Show the default wallet's Polygon address:
     <bold>uwlt address --network</bold> polygon
 
-  Show savings' TRON address:
-    <bold>uwlt address -w</bold> savings <bold>--network</bold> mainnet"#
+  Show savings' Solana address:
+    <bold>uwlt address -w</bold> savings <bold>--network</bold> solana"#
 );
 
 pub(super) const BALANCE: &str = cstr!(
@@ -67,8 +67,11 @@ pub(super) const BALANCE: &str = cstr!(
   Show savings' USDT and ETH balances:
     <bold>uwlt balance -w</bold> savings <bold>--network</bold> ethereum
 
-  Show every local wallet's TRON balances:
-    <bold>uwlt balance --network</bold> mainnet"#
+  Show every local wallet's USDT and SOL balances:
+    <bold>uwlt balance --network</bold> solana
+
+  Query Devnet with a six-decimal classic SPL test mint:
+    <bold>uwlt balance --network</bold> solana-devnet <bold>--token</bold> TEST_MINT"#
 );
 
 pub(super) const SEND: &str = cstr!(
@@ -79,10 +82,14 @@ pub(super) const SEND: &str = cstr!(
   Preview a USDT0 transfer without signing or broadcasting:
     <bold>uwlt send</bold> 10 <bold>--network</bold> polygon <bold>--to</bold> savings <bold>--dry-run</bold>
 
-  Send native POL, ETH or TRX:
+  Send native POL, ETH, TRX or SOL:
     <bold>uwlt send</bold> 1 <bold>--network</bold> polygon <bold>--pol --to</bold> savings
     <bold>uwlt send</bold> 0.001 <bold>--network</bold> ethereum <bold>--eth --to</bold> savings
     <bold>uwlt send</bold> 5 <bold>--network</bold> mainnet <bold>--trx --to</bold> savings
+    <bold>uwlt send</bold> 0.01 <bold>--network</bold> solana <bold>--sol --to</bold> savings
+
+  Preview sending USDT on Solana (creates the recipient ATA when needed):
+    <bold>uwlt send</bold> 10 <bold>--network</bold> solana <bold>--to</bold> savings <bold>--dry-run</bold>
 
   Send USDT from Ethereum to TRON through MetaMask routing:
     <bold>uwlt send</bold> 10 <bold>--network</bold> ethereum <bold>--to</bold> savings \
@@ -95,6 +102,10 @@ pub(super) const SEND: &str = cstr!(
   Preview a cross-chain route with 0.5% maximum slippage:
     <bold>uwlt send</bold> 100 <bold>--network</bold> ethereum <bold>--to</bold> savings \
       <bold>--to-network</bold> mainnet <bold>--slippage</bold> 0.5 <bold>--dry-run</bold>
+
+  Preview USDT from Solana to Ethereum:
+    <bold>uwlt send</bold> 100 <bold>--network</bold> solana <bold>--to</bold> savings \
+      <bold>--to-network</bold> ethereum <bold>--dry-run</bold>
 
   Quotes use the MetaMask routing service; keys and Touch ID signing stay in uwlt.
   No MetaMask wallet or API key is required. Route availability is provider-dependent.
@@ -110,8 +121,11 @@ pub(super) const SWAP: &str = cstr!(
   Exchange 10 USDT for ETH from savings with 1% maximum slippage:
     <bold>uwlt swap</bold> 10 <bold>-w</bold> savings <bold>--network</bold> ethereum <bold>--slippage</bold> 1
 
-  Exchange 10 USDT for TRX:
-    <bold>uwlt swap</bold> 10 <bold>--network</bold> mainnet"#
+  Preview USDT to native SOL through Jupiter V2 / Raydium:
+    <bold>uwlt swap</bold> 10 <bold>--network</bold> solana <bold>--dry-run</bold>
+
+  Solana requires USDT in the wallet's associated token account and SOL for fees.
+  UWLT_JUPITER_API_KEY is optional. Only validated single-hop routes execute."#
 );
 
 pub(super) const FEES: &str = cstr!(
@@ -131,8 +145,8 @@ pub(super) const STATUS: &str = cstr!(
   Check a Polygon transaction (replace TX_HASH with its hash):
     <bold>uwlt status</bold> TX_HASH <bold>--network</bold> polygon
 
-  Check a TRON transaction:
-    <bold>uwlt status</bold> TX_HASH <bold>--network</bold> mainnet"#
+  Check a Solana transaction (use its Base58 signature, not a hex hash):
+    <bold>uwlt status</bold> SIGNATURE <bold>--network</bold> solana"#
 );
 
 pub(super) const BRIDGE_STATUS: &str = cstr!(
@@ -141,9 +155,9 @@ pub(super) const BRIDGE_STATUS: &str = cstr!(
     <bold>uwlt bridge-status</bold> SOURCE_TX_HASH <bold>--network</bold> ethereum \
       <bold>--to-network</bold> mainnet <bold>--bridge-id</bold> BRIDGE_ID <bold>--request-id</bold> REQUEST_ID
 
-  Track a MetaMask-routed transfer from TRON to Polygon:
-    <bold>uwlt bridge-status</bold> SOURCE_TX_HASH <bold>--network</bold> mainnet \
-      <bold>--to-network</bold> polygon <bold>--bridge-id</bold> BRIDGE_ID <bold>--request-id</bold> REQUEST_ID
+  Track a MetaMask-routed transfer from Solana to Polygon:
+    <bold>uwlt bridge-status</bold> SOURCE_SIGNATURE <bold>--network</bold> solana \
+      <bold>--to-network</bold> polygon <bold>--bridge-id</bold> xoswap <bold>--request-id</bold> REQUEST_ID
 
   Copy the complete tracking command printed immediately after source broadcast.
   Tracking uses MetaMask's service; source confirmation alone does not prove delivery.

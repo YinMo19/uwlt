@@ -10,7 +10,7 @@ use super::{
     receipt,
 };
 use crate::{
-    core, ethereum, tron, vault,
+    core, ethereum, solana, tron, vault,
     wallet::{Store, Wallet},
 };
 
@@ -35,6 +35,8 @@ pub(super) struct Transfer {
     eth: bool,
     #[arg(long, group = "native", help = "Send native POL on Polygon")]
     pol: bool,
+    #[arg(long, group = "native", help = "Send native SOL on Solana")]
+    sol: bool,
     #[arg(long, help = "TRON energy budget in TRX (default: 100)")]
     fee_limit: Option<String>,
     #[arg(long, help = "Preview the transfer without signing or broadcasting")]
@@ -63,7 +65,7 @@ impl Transfer {
             .filter(|destination| *destination != network)
         {
             ensure!(
-                !self.trx && !self.eth && !self.pol,
+                !self.trx && !self.eth && !self.pol && !self.sol,
                 "MetaMask-routed transfers use USDT/USDT0"
             );
             ensure!(
@@ -91,16 +93,25 @@ impl Transfer {
         );
         match network.chain() {
             Chain::Tron(chain) => {
-                ensure!(!self.eth && !self.pol, "use --trx for TRON transfers");
+                ensure!(
+                    !self.eth && !self.pol && !self.sol,
+                    "use --trx for TRON transfers"
+                );
                 self.tron(network, tron::Client::new(chain, rpc)?, wallet)
             }
             Chain::Ethereum(chain) => {
                 match chain {
                     ethereum::Network::Polygon => {
-                        ensure!(!self.trx && !self.eth, "use --pol for Polygon transfers");
+                        ensure!(
+                            !self.trx && !self.eth && !self.sol,
+                            "use --pol for Polygon transfers"
+                        );
                     }
                     _ => {
-                        ensure!(!self.trx && !self.pol, "use --eth for Ethereum transfers");
+                        ensure!(
+                            !self.trx && !self.pol && !self.sol,
+                            "use --eth for Ethereum transfers"
+                        );
                     }
                 }
                 ensure!(
@@ -108,6 +119,17 @@ impl Transfer {
                     "--fee-limit applies to TRON energy only"
                 );
                 self.ethereum(network, ethereum::Client::new(chain, rpc, token)?, wallet)
+            }
+            Chain::Solana(chain) => {
+                ensure!(
+                    !self.trx && !self.eth && !self.pol,
+                    "use --sol for Solana transfers"
+                );
+                ensure!(
+                    self.fee_limit.is_none(),
+                    "--fee-limit applies to TRON energy only"
+                );
+                self.solana(network, solana::Client::new(chain, rpc, token)?, wallet)
             }
         }
     }
@@ -238,6 +260,49 @@ impl Transfer {
             &status,
             Some((&prepared.from, &transfer)),
         )
+    }
+
+    fn solana(self, network: Network, client: solana::Client, wallet: &Wallet) -> Result<()> {
+        let from = wallet.solana_address()?;
+        let asset = if self.sol {
+            solana::Asset::Native
+        } else {
+            solana::Asset::Usdt
+        };
+        let prepared = client.prepare(&from, &self.to, &self.amount, asset)?;
+        println!("Network  {}", network.label());
+        println!("From     {}", prepared.from);
+        println!("To       {}", prepared.to);
+        println!("Amount   {} {}", prepared.amount, prepared.symbol);
+        println!("Fee      {} SOL", prepared.fee);
+        println!("Account rent  {} SOL", prepared.rent);
+        if self.dry_run {
+            println!("Not signed or broadcast.");
+            return Ok(());
+        }
+        io::stdout().flush()?;
+        let reason = format!(
+            "Send {} {} to {} on {}",
+            prepared.amount,
+            prepared.symbol,
+            prepared.to,
+            network.label()
+        );
+        let key = vault::load(&wallet.id, &reason)?;
+        let signed = solana::sign(&prepared, &key)?;
+        drop(key);
+        println!("Transaction  {}", signed.txid);
+        io::stdout().flush()?;
+        client.broadcast(&signed)?;
+        println!("Submitted; waiting for confirmation...");
+        let status = client.wait_for_receipt(&signed.txid)?;
+        let transfer = crate::transaction::Transfer {
+            recipient: prepared.to,
+            amount: prepared.amount,
+            symbol: if self.sol { "SOL" } else { "USDT" },
+        };
+        println!();
+        receipt::solana(network, &signed.txid, &status, Some((&from, &transfer)))
     }
 }
 

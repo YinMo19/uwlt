@@ -11,6 +11,8 @@ use serde_json::Value;
 use zeroize::{Zeroize, Zeroizing};
 
 const TRON: u32 = 195;
+const SOLANA: u32 = 501;
+const ED25519: u32 = 1;
 
 unsafe extern "C" {
     fn TWPrivateKeyCreate() -> *mut c_void;
@@ -18,6 +20,7 @@ unsafe extern "C" {
     fn TWPrivateKeyIsValid(data: *mut c_void, curve: u32) -> bool;
     fn TWPrivateKeyDelete(key: *mut c_void);
     fn TWPrivateKeyData(key: *mut c_void) -> *mut c_void;
+    fn TWPrivateKeySign(key: *mut c_void, message: *mut c_void, curve: u32) -> *mut c_void;
     fn TWCoinTypeDeriveAddress(coin: u32, key: *mut c_void) -> *mut c_void;
     fn TWAnySignerSign(input: *mut c_void, coin: u32) -> *mut c_void;
     fn TWDataCreateWithBytes(bytes: *const u8, size: usize) -> *mut c_void;
@@ -126,6 +129,25 @@ pub fn address(key: &[u8; 32]) -> Result<String> {
     let key = PrivateKey::from_bytes(key)?;
     let address = NativeString::from_raw(unsafe { TWCoinTypeDeriveAddress(TRON, key.0.as_ptr()) })?;
     Ok(address.as_str()?.to_owned())
+}
+
+pub fn solana_address(key: &[u8; 32]) -> Result<String> {
+    let key = PrivateKey::from_bytes(key)?;
+    let address =
+        NativeString::from_raw(unsafe { TWCoinTypeDeriveAddress(SOLANA, key.0.as_ptr()) })?;
+    Ok(address.as_str()?.to_owned())
+}
+
+/// Ed25519 signs the serialized Solana message itself, not a prehashed digest.
+pub fn solana_sign(key: &[u8; 32], message: &[u8]) -> Result<[u8; 64]> {
+    let key = PrivateKey::from_bytes(key)?;
+    let message = Data::from_bytes(message)?;
+    let signature =
+        Data::from_raw(unsafe { TWPrivateKeySign(key.0.as_ptr(), message.0.as_ptr(), ED25519) })?;
+    signature
+        .bytes()
+        .try_into()
+        .context("Wallet Core returned an invalid Ed25519 signature")
 }
 
 // Exact field numbers from wallet-core/4.8.4/src/proto/Tron.proto.

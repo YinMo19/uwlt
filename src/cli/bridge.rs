@@ -6,7 +6,7 @@ use super::{
     network::{Chain, Network},
     receipt,
 };
-use crate::{bridge, ethereum, tron, vault, wallet::Wallet};
+use crate::{bridge, ethereum, solana, tron, vault, wallet::Wallet};
 
 pub(super) fn send(
     source: Network,
@@ -39,10 +39,50 @@ pub(super) fn send(
         println!("Not signed or broadcast.");
         return Ok(());
     }
-    let call = quote
+    let transaction = quote
         .call
         .as_ref()
         .context("MetaMask returned no transaction")?;
+    if let bridge::Transaction::Solana(route) = transaction {
+        let Chain::Solana(chain) = source.chain() else {
+            anyhow::bail!("Solana bridge transaction on a different source network");
+        };
+        let client = solana::Client::new(chain, rpc, None)?;
+        let plan = client.prepare_route(route)?;
+        println!("Deposit      {}", route.transfers[0].destination);
+        println!("Approvals    0");
+        println!("Network fee  {} SOL", plan.fee);
+        println!("Account rent {} SOL", plan.rent);
+        println!(
+            "Deposit-to-recipient mapping and destination delivery rely on the quoted bridge provider."
+        );
+        let key = authorize(wallet, &quote)?;
+        quote.ensure_fresh()?;
+        client.ensure_fresh(&plan)?;
+        let signed = solana::sign(&plan, &key)?;
+        drop(key);
+        // Print identifiers before the network call, including ambiguous submission failures.
+        receipt::transaction("bridge", &signed.txid);
+        println!(
+            "Track: {}",
+            recovery_command(
+                source,
+                destination,
+                &quote.bridge_id,
+                &quote.request_id,
+                &signed.txid
+            )
+        );
+        io::stdout().flush()?;
+        client.broadcast(&signed)?;
+        let status = client.wait_for_receipt(&signed.txid)?;
+        receipt::solana(source, &signed.txid, &status, None)?;
+        println!("Source transaction confirmed; destination delivery is pending.");
+        return Ok(());
+    }
+    let bridge::Transaction::Contract(call) = transaction else {
+        unreachable!("Solana transaction handled above");
+    };
     println!("Contract     {}", call.to);
     if let Some(spender) = &call.spender {
         println!("Spender      {spender}");
@@ -105,6 +145,7 @@ pub(super) fn send(
                 fees.record(stage, fee);
             })
         }
+        Chain::Solana(_) => anyhow::bail!("contract transaction on a Solana source network"),
     };
     fees.finish(result)?;
     println!("Source transaction confirmed; destination delivery is pending.");

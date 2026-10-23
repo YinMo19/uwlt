@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::ffi::{CString, c_char, c_int};
+use std::ffi::{CStr, CString, c_char, c_int};
 use std::fmt;
 use zeroize::Zeroizing;
 
@@ -10,6 +10,7 @@ unsafe extern "C" {
         id: *const c_char,
         label: *const c_char,
         address: *const c_char,
+        solana_address: *const c_char,
         key: *const u8,
         reason: *const c_char,
         error: *mut c_char,
@@ -32,6 +33,7 @@ unsafe extern "C" {
         wallets: *const u8,
         wallets_length: usize,
         reason: *const c_char,
+        derive_solana: unsafe extern "C" fn(*const u8, *const c_char, *mut c_char, usize) -> c_int,
         json: *mut *mut u8,
         json_length: *mut usize,
         error: *mut c_char,
@@ -45,6 +47,8 @@ pub struct SyncWallet {
     pub id: String,
     pub name: String,
     pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solana_address: Option<String>,
 }
 
 struct NativeJson {
@@ -109,10 +113,19 @@ pub fn available() -> Result<()> {
 }
 
 /// Adds a synchronizable item after one Touch ID authorization; never overwrites.
-pub fn save(id: &str, name: &str, address: &str, key: &[u8; 32], reason: &str) -> Result<()> {
+pub fn save(
+    id: &str,
+    name: &str,
+    address: &str,
+    solana_address: &str,
+    key: &[u8; 32],
+    reason: &str,
+) -> Result<()> {
     let (id, reason) = arguments(id, reason)?;
     let label = CString::new(format!("uwlt: {name}"))?;
     let address = CString::new(address).context("Wallet address contains a NUL byte")?;
+    let solana_address =
+        CString::new(solana_address).context("Solana address contains a NUL byte")?;
     let mut encoded = Zeroizing::new([0u8; 64]);
     hex::encode_to_slice(key, encoded.as_mut())?;
     // SAFETY: Strings and the borrowed 64-byte hex key outlive the synchronous call.
@@ -121,6 +134,7 @@ pub fn save(id: &str, name: &str, address: &str, key: &[u8; 32], reason: &str) -
             id.as_ptr(),
             label.as_ptr(),
             address.as_ptr(),
+            solana_address.as_ptr(),
             encoded.as_ptr(),
             reason.as_ptr(),
             error,
@@ -157,6 +171,40 @@ pub fn delete(id: &str, reason: &str) -> Result<()> {
     })
 }
 
+// Called only during an already-authorized native sync. The key never enters
+// metadata JSON; only the derived public address leaves this zeroizing buffer.
+unsafe extern "C" fn derive_solana(
+    encoded: *const u8,
+    expected_tron: *const c_char,
+    output: *mut c_char,
+    capacity: usize,
+) -> c_int {
+    let derive = || -> Result<()> {
+        ensure!(
+            !encoded.is_null() && !expected_tron.is_null() && !output.is_null(),
+            "missing address derivation buffer"
+        );
+        // SAFETY: native sync supplies exactly 64 hex bytes and a live C string.
+        let encoded = unsafe { std::slice::from_raw_parts(encoded, 64) };
+        let expected = unsafe { CStr::from_ptr(expected_tron) }.to_str()?;
+        let mut key = Zeroizing::new([0u8; 32]);
+        hex::decode_to_slice(encoded, key.as_mut())?;
+        ensure!(
+            crate::core::address(&key)? == expected,
+            "wallet key/address mismatch"
+        );
+        let address = crate::core::solana_address(&key)?;
+        ensure!(address.len() < capacity, "address buffer too small");
+        // SAFETY: capacity includes the terminating NUL; source and output differ.
+        unsafe {
+            std::ptr::copy_nonoverlapping(address.as_ptr(), output.cast(), address.len());
+            *output.add(address.len()) = 0;
+        }
+        Ok(())
+    };
+    if derive().is_ok() { 0 } else { 1 }
+}
+
 /// Migrates local keys and discovers metadata already downloaded by iCloud Keychain.
 pub fn sync(wallets: &[SyncWallet]) -> Result<Vec<SyncWallet>> {
     let input = serde_json::to_vec(wallets)?;
@@ -172,6 +220,7 @@ pub fn sync(wallets: &[SyncWallet]) -> Result<Vec<SyncWallet>> {
             input.as_ptr(),
             input.len(),
             reason.as_ptr(),
+            derive_solana,
             &mut json.data,
             &mut json.length,
             error,
@@ -182,4 +231,39 @@ pub fn sync(wallets: &[SyncWallet]) -> Result<Vec<SyncWallet>> {
     // bytes containing metadata only; json owns it until after deserialization.
     let bytes = unsafe { std::slice::from_raw_parts(json.data, json.length) };
     serde_json::from_slice(bytes).context("Cannot decode synchronized wallet metadata")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_requires_matching_key_and_a_bounded_public_address_buffer() {
+        let key = [1u8; 32];
+        let encoded = hex::encode(key);
+        let address = CString::new(crate::core::address(&key).unwrap()).unwrap();
+        let mut output = [0x7fu8; 45];
+        let derive = |expected: &CStr, output: &mut [u8]| unsafe {
+            derive_solana(
+                encoded.as_ptr(),
+                expected.as_ptr(),
+                output.as_mut_ptr().cast(),
+                output.len(),
+            )
+        };
+        assert_ne!(derive(c"wrong-wallet", &mut output), 0);
+        assert_eq!(output, [0x7f; 45]);
+        assert_ne!(derive(&address, &mut output[..4]), 0);
+        assert_eq!(output, [0x7f; 45]);
+        assert_eq!(derive(&address, &mut output), 0);
+        let actual = CStr::from_bytes_until_nul(&output)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            bs58::decode(actual).into_vec().unwrap(),
+            hex::decode("8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c")
+                .unwrap()
+        );
+    }
 }

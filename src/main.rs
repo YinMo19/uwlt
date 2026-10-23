@@ -2,6 +2,7 @@ mod bridge;
 mod cli;
 mod core;
 mod ethereum;
+mod solana;
 mod swap;
 mod transaction;
 mod tron;

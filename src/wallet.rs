@@ -13,6 +13,8 @@ use zeroize::Zeroizing;
 pub struct Wallet {
     pub id: String,
     pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solana_address: Option<String>,
 }
 
 impl Wallet {
@@ -23,6 +25,18 @@ impl Wallet {
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid stored wallet address"))?;
         Ok(alloy::primitives::Address::from_slice(&bytes[1..]).to_checksum(None))
+    }
+
+    pub fn solana_address(&self) -> Result<String> {
+        let address = self.solana_address.as_ref().context(
+            "wallet has no Solana address; run `uwlt sync --network solana` once with Touch ID to migrate it",
+        )?;
+        let mut bytes = [0u8; 32];
+        ensure!(
+            bs58::decode(address).onto(&mut bytes[..])? == bytes.len(),
+            "invalid stored Solana address"
+        );
+        Ok(address.clone())
     }
 }
 
@@ -107,6 +121,7 @@ impl Store {
                 Wallet {
                     id: wallet.id,
                     address: wallet.address,
+                    solana_address: wallet.solana_address,
                 },
             );
         }

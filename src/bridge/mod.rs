@@ -1,12 +1,13 @@
 //! MetaMask bridge routing; all transactions and approvals are signed locally.
 //!
-//! Trust boundary: token transfers and approvals are decoded exactly. Router calldata
-//! is opaque: MetaMask and its selected protocol remain trusted for the destination,
-//! recipient, minimum output, and deposit-address mapping. Envelope checks and exact
-//! local approvals do NOT prove those router semantics or guaranteed delivery.
+//! Trust boundary: token transfers and approvals are decoded exactly. EVM router
+//! calldata is opaque; Solana supports decoded direct deposits only. MetaMask and
+//! its protocol remain trusted for router semantics and deposit-to-recipient mapping.
+//! Envelope checks and exact local transfers do not guarantee destination delivery.
 //! Uses the wallet backend's getQuote API, not a MetaMask wallet or signing service.
 //! Schema: github.com/MetaMask/core/tree/main/packages/bridge-controller/src/validators.
 mod amount;
+mod solana_route;
 mod status;
 mod transaction;
 
@@ -24,6 +25,7 @@ pub enum Chain {
     Tron,
     Ethereum,
     Polygon,
+    Solana,
 }
 
 impl Chain {
@@ -32,6 +34,7 @@ impl Chain {
             Self::Tron => "mainnet",
             Self::Ethereum => "ethereum",
             Self::Polygon => "polygon",
+            Self::Solana => "solana",
         }
     }
 
@@ -40,6 +43,7 @@ impl Chain {
             Self::Tron => "TRX",
             Self::Ethereum => "ETH",
             Self::Polygon => "POL",
+            Self::Solana => "SOL",
         }
     }
 
@@ -48,6 +52,8 @@ impl Chain {
             Self::Tron => "728126428",
             Self::Ethereum => "1",
             Self::Polygon => "137",
+            // Numeric bridge API ID, confirmed by live /getQuote responses.
+            Self::Solana => "1151111081099710",
         }
     }
 
@@ -56,6 +62,7 @@ impl Chain {
             Self::Tron => crate::tron::USDT,
             Self::Ethereum => "0xdAC17F958D2ee523a2206206994597C13D831ec7",
             Self::Polygon => "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+            Self::Solana => crate::solana::USDT,
         }
     }
 }
@@ -70,6 +77,11 @@ pub struct ContractCall {
     pub data: Vec<u8>,
     pub value: U256,
     pub expires_at: Option<u64>,
+}
+
+pub enum Transaction {
+    Contract(ContractCall),
+    Solana(crate::solana::RemoteRoute),
 }
 
 pub struct Quote {
@@ -88,7 +100,7 @@ pub struct Quote {
     pub request_id: String,
     pub bridge_id: String,
     pub slippage_bps: u16,
-    pub call: Option<ContractCall>,
+    pub call: Option<Transaction>,
     deadline: u64,
 }
 
@@ -144,8 +156,8 @@ impl Client {
             source != destination,
             "bridge requires different source and destination networks"
         );
-        address(source, from)?;
-        address(destination, to)?;
+        wallet_address(source, from)?;
+        wallet_address(destination, to)?;
         ensure!(
             slippage_bps < 10_000,
             "slippage must be between 0 and 9999 basis points"
@@ -300,11 +312,12 @@ fn parse_quote(
     validate_token(&route["srcAsset"], source)?;
     validate_token(&route["destAsset"], destination)?;
     ensure!(
-        address(source, text(route, "walletAddress")?)? == address(source, from)?,
+        wallet_address(source, text(route, "walletAddress")?)? == wallet_address(source, from)?,
         "MetaMask source wallet mismatch"
     );
     ensure!(
-        address(destination, text(route, "destWalletAddress")?)? == address(destination, to)?,
+        wallet_address(destination, text(route, "destWalletAddress")?)?
+            == wallet_address(destination, to)?,
         "MetaMask destination wallet mismatch"
     );
     for field in ["gasIncluded", "gasIncluded7702", "gasSponsored"] {
@@ -361,14 +374,24 @@ fn parse_quote(
     protocol_deadline(route, &mut deadline)?;
     protocol_deadline(&response["trade"], &mut deadline)?;
     // Dry-run validates the same executable envelope without signing or broadcasting.
-    let call = transaction::normalize(response, source, from, units, deadline)?;
+    let call = if source == Chain::Solana {
+        Transaction::Solana(solana_route::normalize(
+            response, from, to, units, deadline,
+        )?)
+    } else {
+        Transaction::Contract(transaction::normalize(
+            response, source, from, units, deadline,
+        )?)
+    };
     let mut fees = fees;
-    if !call.value.is_zero() {
-        fees.push(format!(
-            "{} {} | additional native value sent with trade",
-            amount::format_units(call.value, if source == Chain::Tron { 6 } else { 18 }),
-            source.native_symbol()
-        ));
+    if let Transaction::Contract(call) = &call {
+        if !call.value.is_zero() {
+            fees.push(format!(
+                "{} {} | additional native value sent with trade",
+                amount::format_units(call.value, if source == Chain::Tron { 6 } else { 18 }),
+                source.native_symbol()
+            ));
+        }
     }
     fees.push(format!(
         "{} network gas is additional; estimated locally before execution",
@@ -411,7 +434,7 @@ fn validate_chain(value: &Value, chain: Chain) -> Result<()> {
 fn validate_token(token: &Value, chain: Chain) -> Result<()> {
     validate_chain(&token["chainId"], chain)?;
     ensure!(
-        address(chain, text(token, "address")?)? == address(chain, chain.token())?,
+        wallet_address(chain, text(token, "address")?)? == wallet_address(chain, chain.token())?,
         "MetaMask token is not configured USDT"
     );
     ensure!(
@@ -505,7 +528,32 @@ fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     Ok(text)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum WalletAddress {
+    Account(Address),
+    Solana([u8; 32]),
+}
+
+fn wallet_address(chain: Chain, input: &str) -> Result<WalletAddress> {
+    if chain != Chain::Solana {
+        return address(chain, input).map(WalletAddress::Account);
+    }
+    let mut bytes = [0; 32];
+    let length = bs58::decode(input)
+        .onto(&mut bytes)
+        .context("invalid Solana base58 address")?;
+    ensure!(
+        length == 32 && bytes != [0; 32],
+        "invalid Solana address length or zero address"
+    );
+    Ok(WalletAddress::Solana(bytes))
+}
+
 fn address(chain: Chain, input: &str) -> Result<Address> {
+    ensure!(
+        chain != Chain::Solana,
+        "Solana addresses are not 20-byte contract addresses"
+    );
     let address = if chain == Chain::Tron {
         let bytes = bs58::decode(input)
             .with_check(None)
@@ -605,7 +653,10 @@ mod tests {
         assert_eq!(quote.request_id, "tx64c-provider-specific-id");
         assert_eq!(quote.bridge_id, "test-provider");
         assert_eq!(quote.messenger, "Test bridge");
-        assert_eq!(quote.call.unwrap().amount, U256::from(100_000_000));
+        let Transaction::Contract(call) = quote.call.unwrap() else {
+            panic!("expected contract call")
+        };
+        assert_eq!(call.amount, U256::from(100_000_000));
         assert!(parse(response(), true).unwrap().call.is_none());
     }
 
@@ -639,7 +690,7 @@ mod tests {
             candidate["quote"]["srcAsset"][field] = value;
             assert!(parse(candidate, true).is_err(), "{field}");
         }
-        for chain in [Chain::Tron, Chain::Ethereum, Chain::Polygon] {
+        for chain in [Chain::Tron, Chain::Ethereum, Chain::Polygon, Chain::Solana] {
             validate_token(&token(chain), chain).unwrap();
         }
     }
@@ -747,5 +798,46 @@ mod tests {
             candidate["quote"][field] = json!({});
             assert!(parse(candidate, true).is_err(), "{field}");
         }
+    }
+
+    #[test]
+    fn solana_destination_validates_base58_without_evm_normalization() {
+        let recipient = "9xQeWvG816bUx9EPfEZzxAQbBqFQvcwACV9j8CjKzG77";
+        let mut candidate = response();
+        candidate["quote"]["destChainId"] = json!(1_151_111_081_099_710u64);
+        candidate["quote"]["destAsset"] = token(Chain::Solana);
+        candidate["quote"]["destWalletAddress"] = json!(recipient);
+        let select = |candidate: Value| {
+            select_quote(
+                &json!([candidate]),
+                Chain::Ethereum,
+                Chain::Solana,
+                FROM,
+                recipient,
+                U256::from(100_000_000),
+                50,
+                true,
+                now().unwrap(),
+            )
+        };
+        assert!(select(candidate.clone()).is_ok());
+        for bad_address in [
+            recipient.to_ascii_lowercase(),
+            FROM.to_owned(),
+            bs58::encode([1u8; 31]).into_string(),
+            bs58::encode([0u8; 32]).into_string(),
+        ] {
+            let mut altered = candidate.clone();
+            altered["quote"]["destWalletAddress"] = json!(bad_address);
+            assert!(select(altered).is_err());
+        }
+        let mut altered = candidate.clone();
+        altered["quote"]["destAsset"]["address"] =
+            json!(Chain::Solana.token().to_ascii_lowercase());
+        assert!(select(altered).is_err());
+        let mut altered = candidate;
+        altered["quote"]["destAsset"]["decimals"] = json!(9);
+        assert!(select(altered).is_err());
+        assert!(address(Chain::Solana, recipient).is_err());
     }
 }

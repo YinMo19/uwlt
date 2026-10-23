@@ -4,7 +4,7 @@ use super::{
     network::{Chain, Network},
     receipt,
 };
-use crate::{ethereum, tron};
+use crate::{ethereum, solana, tron};
 
 pub(super) fn balance<'a>(
     network: Network,
@@ -30,6 +30,18 @@ pub(super) fn balance<'a>(
         }
         Chain::Ethereum(network) => {
             let client = ethereum::Client::new(network, rpc, token)?;
+            for (index, account) in accounts.enumerate() {
+                let (name, address) = account?;
+                let balance = client.balance(&address)?;
+                account_heading(index, name, &address);
+                if let Some(usdt) = balance.usdt {
+                    println!("{:<5} {usdt}", client.token_symbol());
+                }
+                println!("{:<5} {}", client.native_symbol(), balance.native);
+            }
+        }
+        Chain::Solana(network) => {
+            let client = solana::Client::new(network, rpc, token)?;
             for (index, account) in accounts.enumerate() {
                 let (name, address) = account?;
                 let balance = client.balance(&address)?;
@@ -68,6 +80,10 @@ pub(super) fn status(
         Chain::Ethereum(chain) => {
             let status = ethereum::Client::new(chain, rpc, token)?.status(txid)?;
             receipt::ethereum(network, txid, &status, None)
+        }
+        Chain::Solana(chain) => {
+            let status = solana::Client::new(chain, rpc, token)?.status(txid)?;
+            receipt::solana(network, txid, &status, None)
         }
     }
 }

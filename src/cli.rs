@@ -26,7 +26,7 @@ use transfer::Transfer;
 #[command(
     version,
     disable_help_subcommand = true,
-    about = "USDT wallet for TRON, Ethereum and Polygon",
+    about = "USDT wallet for TRON, Ethereum, Polygon and Solana",
     after_help = help::QUICK_START
 )]
 pub struct Cli {
@@ -41,7 +41,11 @@ pub struct Cli {
     network: Option<Network>,
     #[arg(long, global = true, env = "UWLT_RPC", help = "HTTP RPC endpoint")]
     rpc: Option<String>,
-    #[arg(long, global = true, help = "Sepolia test-token contract")]
+    #[arg(
+        long,
+        global = true,
+        help = "Six-decimal test token: Sepolia contract or Solana Devnet SPL mint"
+    )]
     token: Option<String>,
     #[command(subcommand)]
     command: Command,
@@ -72,7 +76,7 @@ enum Command {
     /// Show token and native-coin balances for all local wallets, or a selected wallet or address
     #[command(after_help = help::BALANCE)]
     Balance { address: Option<String> },
-    /// Send USDT/USDT0, or use --trx / --eth / --pol for the native coin
+    /// Send USDT/USDT0, or use --trx / --eth / --pol / --sol for the native coin
     #[command(after_help = help::SEND)]
     Send(Transfer),
     /// Exchange USDT/USDT0 for the selected network's native coin
@@ -133,8 +137,8 @@ impl Cli {
                 None => Network::prompt()?,
             };
             ensure!(
-                self.token.is_none() || matches!(network, Network::Sepolia),
-                "--token is only used with Sepolia"
+                self.token.is_none() || matches!(network, Network::Sepolia | Network::SolanaDevnet),
+                "--token is only used with Sepolia or Solana Devnet"
             );
             Ok(network)
         };
@@ -153,6 +157,7 @@ impl Cli {
             Command::Doctor => {
                 let key = core::generate()?;
                 core::address(&key)?;
+                core::solana_address(&key)?;
                 println!("Wallet Core: available");
                 vault::available()?;
                 println!("Touch ID: available");
@@ -189,6 +194,7 @@ impl Cli {
                         id: wallet.id.clone(),
                         name: name.clone(),
                         address: wallet.address.clone(),
+                        solana_address: wallet.solana_address.clone(),
                     })
                     .collect();
                 let wallets = vault::sync(&wallets)?;
@@ -328,12 +334,14 @@ impl Cli {
 fn add_wallet(store: &mut Store, name: String, key: &[u8; 32]) -> Result<()> {
     let wallet = Wallet {
         address: core::address(key)?,
+        solana_address: Some(core::solana_address(key)?),
         id: uuid::Uuid::new_v4().to_string(),
     };
     vault::save(
         &wallet.id,
         &name,
         &wallet.address,
+        &wallet.solana_address()?,
         key,
         &format!("Save wallet {name}"),
     )?;
@@ -342,6 +350,7 @@ fn add_wallet(store: &mut Store, name: String, key: &[u8; 32]) -> Result<()> {
     println!("{name}");
     println!("TRON  {}", wallet.address);
     println!("EVM   {} (Ethereum / Polygon)", wallet.ethereum_address()?);
+    println!("SOL   {}", wallet.solana_address()?);
     println!("Back up with: uwlt --wallet {name} backup <file>");
     Ok(())
 }

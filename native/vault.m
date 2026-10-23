@@ -91,14 +91,22 @@ static NSMutableDictionary *query(NSString *account, LAContext *context, id sync
     return item;
 }
 
+static NSData *addressMetadata(NSString *address, NSString *solanaAddress) {
+    NSMutableDictionary *metadata = [@{@"address": address} mutableCopy];
+    if ([solanaAddress isKindOfClass:[NSString class]] && solanaAddress.length != 0) {
+        metadata[@"solana_address"] = solanaAddress;
+    }
+    return [NSJSONSerialization dataWithJSONObject:metadata options:0 error:NULL];
+}
+
 static NSMutableDictionary *syncItem(NSString *account, NSString *label, NSString *address,
-                                    LAContext *context, NSData *key) {
+                                    NSString *solanaAddress, LAContext *context, NSData *key) {
     NSMutableDictionary *item = query(account, context, @YES);
     // Synchronizable items cannot use biometryCurrentSet; uwlt authorizes explicitly.
     item[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleWhenUnlocked;
     item[(__bridge id)kSecAttrLabel] = label;
-    item[(__bridge id)kSecAttrGeneric] = [address dataUsingEncoding:NSUTF8StringEncoding];
-    item[(__bridge id)kSecAttrComment] = @"TRON / EVM private key";
+    item[(__bridge id)kSecAttrGeneric] = addressMetadata(address, solanaAddress);
+    item[(__bridge id)kSecAttrComment] = @"TRON / EVM / Solana private key";
     item[(__bridge id)kSecValueData] = key;
     return item;
 }
@@ -124,7 +132,8 @@ int uwlt_vault_available(char *error, size_t capacity) {
 }
 
 int uwlt_vault_save(const char *identifier, const char *label, const char *address,
-                   const uint8_t *key, const char *reason, char *error, size_t capacity) {
+                   const char *solanaAddress, const uint8_t *key, const char *reason,
+                   char *error, size_t capacity) {
     @autoreleasepool {
         NSString *account = nil, *prompt = nil;
         if (!arguments(identifier, reason, &account, &prompt, error, capacity)) return UWLT_ERROR;
@@ -135,8 +144,10 @@ int uwlt_vault_save(const char *identifier, const char *label, const char *addre
             if (result != UWLT_OK) return result;
             // Borrow Rust's zeroizing buffer; do not allocate a second plaintext copy.
             NSData *data = [NSData dataWithBytesNoCopy:(void *)key length:64 freeWhenDone:NO];
-            NSMutableDictionary *item = syncItem(account, [NSString stringWithUTF8String:label],
-                                                [NSString stringWithUTF8String:address], context, data);
+            NSMutableDictionary *item = syncItem(
+                account, [NSString stringWithUTF8String:label],
+                [NSString stringWithUTF8String:address],
+                [NSString stringWithUTF8String:solanaAddress], context, data);
             OSStatus status = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
             // Never update an existing account implicitly.
             return status == errSecSuccess ? UWLT_OK : keychainError(error, capacity, status);
@@ -212,8 +223,8 @@ static int migrateWallet(NSDictionary *wallet, LAContext *context, char *error, 
             return fail(error, capacity, @"Legacy Keychain item is not a hexadecimal private key", NO);
         }
         NSString *label = [@"uwlt: " stringByAppendingString:wallet[@"name"]];
-        NSMutableDictionary *item = syncItem(account, label, wallet[@"address"], context,
-                                            (__bridge NSData *)source);
+        NSMutableDictionary *item = syncItem(account, label, wallet[@"address"],
+                                            wallet[@"solana_address"], context, (__bridge NSData *)source);
         status = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
         if (status == errSecDuplicateItem) {
             NSMutableDictionary *existing = query(account, context, @YES);
@@ -239,8 +250,48 @@ static int migrateWallet(NSDictionary *wallet, LAContext *context, char *error, 
     }
 }
 
+typedef int (*DeriveSolana)(const uint8_t *, const char *, char *, size_t);
+
+static NSString *migrateSolanaAddress(NSString *account, NSString *address, LAContext *context,
+                                     DeriveSolana derive, char *error, size_t capacity) {
+    CFTypeRef data = NULL;
+    @try {
+        NSMutableDictionary *item = query(account, context, @YES);
+        item[(__bridge id)kSecReturnData] = @YES;
+        item[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)item, &data);
+        if (status != errSecSuccess) {
+            keychainError(error, capacity, status);
+            return nil;
+        }
+        char solana[45] = {0};
+        if (data == NULL || CFGetTypeID(data) != CFDataGetTypeID() ||
+            CFDataGetLength((CFDataRef)data) != 64 ||
+            derive(CFDataGetBytePtr((CFDataRef)data), address.UTF8String,
+                   solana, sizeof(solana)) != 0) {
+            fail(error, capacity, @"Cannot derive Solana address: invalid key or wallet address mismatch", NO);
+            return nil;
+        }
+        NSString *result = [NSString stringWithUTF8String:solana];
+        NSDictionary *update = @{
+            (__bridge id)kSecAttrGeneric: addressMetadata(address, result),
+            (__bridge id)kSecAttrComment: @"TRON / EVM / Solana private key",
+        };
+        status = SecItemUpdate((__bridge CFDictionaryRef)query(account, context, @YES),
+                               (__bridge CFDictionaryRef)update);
+        if (status != errSecSuccess) {
+            keychainError(error, capacity, status);
+            return nil;
+        }
+        return result;
+    } @finally {
+        if (data != NULL) CFRelease(data);
+    }
+}
+
 int uwlt_vault_sync(const uint8_t *wallets, size_t walletsLength, const char *reason,
-                   uint8_t **json, size_t *jsonLength, char *error, size_t capacity) {
+                   DeriveSolana deriveSolana, uint8_t **json, size_t *jsonLength,
+                   char *error, size_t capacity) {
     @autoreleasepool {
         *json = NULL;
         *jsonLength = 0;
@@ -272,16 +323,31 @@ int uwlt_vault_sync(const uint8_t *wallets, size_t walletsLength, const char *re
                     NSString *account = item[(__bridge id)kSecAttrAccount];
                     NSString *label = item[(__bridge id)kSecAttrLabel];
                     NSData *generic = item[(__bridge id)kSecAttrGeneric];
-                    NSString *address = generic == nil ? nil :
-                        [[NSString alloc] initWithData:generic encoding:NSUTF8StringEncoding];
-                    if (account.length == 0 || ![label hasPrefix:@"uwlt: "] || address.length == 0) {
+                    id decoded = generic == nil ? nil :
+                        [NSJSONSerialization JSONObjectWithData:generic options:0 error:NULL];
+                    NSString *address = nil, *solanaAddress = nil;
+                    if ([decoded isKindOfClass:[NSDictionary class]]) {
+                        address = decoded[@"address"];
+                        solanaAddress = decoded[@"solana_address"];
+                    } else if (generic != nil && decoded == nil) {
+                        // Before Solana support the attribute contained a bare TRON address.
+                        address = [[NSString alloc] initWithData:generic encoding:NSUTF8StringEncoding];
+                    }
+                    if (account.length == 0 || ![label hasPrefix:@"uwlt: "] ||
+                        ![address isKindOfClass:[NSString class]] || address.length == 0) {
                         return fail(error, capacity,
                                     @"Synchronized wallet is missing its name, ID, or address", NO);
+                    }
+                    if (![solanaAddress isKindOfClass:[NSString class]] || solanaAddress.length == 0) {
+                        solanaAddress = migrateSolanaAddress(account, address, context,
+                                                             deriveSolana, error, capacity);
+                        if (solanaAddress == nil) return UWLT_ERROR;
                     }
                     [discovered addObject:@{
                         @"id": account,
                         @"name": [label substringFromIndex:6],
                         @"address": address,
+                        @"solana_address": solanaAddress,
                     }];
                 }
             }

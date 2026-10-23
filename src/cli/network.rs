@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use anyhow::{Result, bail};
 use clap::ValueEnum;
 
-use crate::{ethereum, tron, wallet::Wallet};
+use crate::{ethereum, solana, tron, wallet::Wallet};
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(super) enum Network {
@@ -12,11 +12,14 @@ pub(super) enum Network {
     Ethereum,
     Sepolia,
     Polygon,
+    Solana,
+    SolanaDevnet,
 }
 
 pub(super) enum Chain {
     Tron(tron::Network),
     Ethereum(ethereum::Network),
+    Solana(solana::Network),
 }
 
 impl Network {
@@ -30,6 +33,8 @@ impl Network {
                 Self::Ethereum => "Ethereum mainnet",
                 Self::Sepolia => "Ethereum testnet",
                 Self::Polygon => "Polygon PoS",
+                Self::Solana => "Solana mainnet",
+                Self::SolanaDevnet => "Solana devnet",
             };
             eprintln!("  {}. {} ({description})", index + 1, network.label());
         }
@@ -65,6 +70,8 @@ impl Network {
             Self::Ethereum => "ethereum",
             Self::Sepolia => "sepolia",
             Self::Polygon => "polygon",
+            Self::Solana => "solana",
+            Self::SolanaDevnet => "solana-devnet",
         }
     }
 
@@ -75,6 +82,8 @@ impl Network {
             Self::Ethereum => Chain::Ethereum(ethereum::Network::Mainnet),
             Self::Sepolia => Chain::Ethereum(ethereum::Network::Sepolia),
             Self::Polygon => Chain::Ethereum(ethereum::Network::Polygon),
+            Self::Solana => Chain::Solana(solana::Network::Mainnet),
+            Self::SolanaDevnet => Chain::Solana(solana::Network::Devnet),
         }
     }
 
@@ -83,7 +92,8 @@ impl Network {
             Self::Mainnet => Ok(crate::bridge::Chain::Tron),
             Self::Ethereum => Ok(crate::bridge::Chain::Ethereum),
             Self::Polygon => Ok(crate::bridge::Chain::Polygon),
-            Self::Nile | Self::Sepolia => {
+            Self::Solana => Ok(crate::bridge::Chain::Solana),
+            Self::Nile | Self::Sepolia | Self::SolanaDevnet => {
                 bail!("MetaMask-routed transfers require mainnet networks")
             }
         }
@@ -93,6 +103,7 @@ impl Network {
         match self.chain() {
             Chain::Ethereum(_) => wallet.ethereum_address(),
             Chain::Tron(_) => Ok(wallet.address.clone()),
+            Chain::Solana(_) => wallet.solana_address(),
         }
     }
 }

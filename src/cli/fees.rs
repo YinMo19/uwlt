@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 
 use super::network::{Chain, Network};
-use crate::{ethereum, tron};
+use crate::{ethereum, solana, tron};
 
 pub(super) fn run(network: Network, rpc: Option<&str>, token: Option<&str>) -> Result<()> {
     print!("{}", rates(network, rpc, token)?);
@@ -15,6 +15,8 @@ pub(super) fn all() -> Result<()> {
         Network::Ethereum,
         Network::Sepolia,
         Network::Polygon,
+        Network::Solana,
+        Network::SolanaDevnet,
     ];
     let results = std::thread::scope(|scope| {
         networks
@@ -60,6 +62,13 @@ fn rates(network: Network, rpc: Option<&str>, token: Option<&str>) -> Result<Str
                 fees.max_gwei,
                 fees.native_transfer,
                 client.native_symbol(),
+            ))
+        }
+        Chain::Solana(chain) => {
+            let fees = solana::Client::new(chain, rpc, token)?.fees()?;
+            Ok(format!(
+                "{label} (SOL)\n  Native transfer  {} SOL (one signature, no priority fee)\n  Token account    {} SOL rent-exempt deposit if needed\n",
+                fees.native_transfer, fees.token_account_rent,
             ))
         }
     }

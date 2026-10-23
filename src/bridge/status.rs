@@ -3,7 +3,7 @@ use anyhow::{Result, bail, ensure};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Chain, Client, Status, address, amount};
+use super::{Chain, Client, Status, amount, wallet_address};
 
 // MetaMask core: bridge-status-controller/src/utils/{bridge-status,validators}.ts.
 // COMPLETE is a provider report, not independent proof of recipient delivery.
@@ -73,6 +73,17 @@ impl Client {
 }
 
 fn transaction_hash(chain: Chain, txid: &str) -> Result<String> {
+    if chain == Chain::Solana {
+        let mut signature = [0; 64];
+        let length = bs58::decode(txid)
+            .onto(&mut signature)
+            .map_err(|_| anyhow::anyhow!("Solana transaction signature must be base58"))?;
+        ensure!(
+            length == 64 && signature != [0; 64],
+            "Solana transaction signature must encode 64 bytes and must not be all zero"
+        );
+        return Ok(txid.to_owned());
+    }
     let hash = txid.strip_prefix("0x").unwrap_or(txid);
     ensure!(
         hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
@@ -91,6 +102,7 @@ fn chain_id(chain: Chain) -> u64 {
         Chain::Ethereum => 1,
         Chain::Polygon => 137,
         Chain::Tron => 728_126_428,
+        Chain::Solana => 1_151_111_081_099_710,
     }
 }
 
@@ -133,8 +145,8 @@ impl StatusResponse {
                 output_verified = token.chain_id == Some(chain_id(destination))
                     && token.decimals == Some(6)
                     && token.address.as_deref().is_some_and(|token_address| {
-                        address(destination, token_address).ok()
-                            == address(destination, destination.token()).ok()
+                        wallet_address(destination, token_address).ok()
+                            == wallet_address(destination, destination.token()).ok()
                     })
                     && units.is_some_and(|units| units > U256::ZERO);
             }
@@ -331,5 +343,65 @@ mod tests {
         value["srcChain"]["txHash"] = json!(hash);
         assert_eq!(interpret(value).unwrap().state, "completed");
         assert!(transaction_hash(Chain::Tron, "abc").is_err());
+    }
+
+    #[test]
+    fn solana_signatures_keep_case_and_chain_specific_lengths() {
+        let signature = bs58::encode([42u8; 64]).into_string();
+        assert_eq!(
+            transaction_hash(Chain::Solana, &signature).unwrap(),
+            signature
+        );
+        assert!(transaction_hash(Chain::Ethereum, &signature).is_err());
+        assert!(transaction_hash(Chain::Solana, &bs58::encode([42u8; 32]).into_string()).is_err());
+        assert!(transaction_hash(Chain::Solana, &format!("0x{}", "ab".repeat(32))).is_err());
+        for source_is_solana in [true, false] {
+            let mut value = response("COMPLETE");
+            let side = if source_is_solana {
+                "srcChain"
+            } else {
+                "destChain"
+            };
+            value[side]["chainId"] = json!(chain_id(Chain::Solana));
+            value[side]["txHash"] = json!(signature);
+            value[side]["token"] = json!({
+                "chainId": chain_id(Chain::Solana), "address": Chain::Solana.token(), "decimals": 6
+            });
+            let (source, destination, txid) = if source_is_solana {
+                (Chain::Solana, Chain::Polygon, signature.clone())
+            } else {
+                (
+                    Chain::Ethereum,
+                    Chain::Solana,
+                    format!("0x{}", "ab".repeat(32)),
+                )
+            };
+            let status = serde_json::from_value::<StatusResponse>(value.clone())
+                .unwrap()
+                .into_status(source, destination, &txid)
+                .unwrap();
+            assert_eq!(status.state, "completed");
+            if !source_is_solana {
+                assert_eq!(status.destination_tx.as_deref(), Some(signature.as_str()));
+                value["destChain"]["token"]["address"] =
+                    json!(Chain::Solana.token().to_ascii_lowercase());
+                assert_eq!(
+                    serde_json::from_value::<StatusResponse>(value)
+                        .unwrap()
+                        .into_status(source, destination, &txid)
+                        .unwrap()
+                        .state,
+                    "output unverified"
+                );
+            } else {
+                value["srcChain"]["txHash"] = json!(bs58::encode([43u8; 64]).into_string());
+                assert!(
+                    serde_json::from_value::<StatusResponse>(value)
+                        .unwrap()
+                        .into_status(source, destination, &txid)
+                        .is_err()
+                );
+            }
+        }
     }
 }

@@ -1,3 +1,9 @@
+RFC 8032 section 7.1 Ed25519 interoperability vector in src/core/tests.rs
+Source: https://www.rfc-editor.org/rfc/rfc8032#section-7.1
+Copyright (c) 2017 IETF Trust and the persons identified as the document authors.
+Terms: https://trustee.ietf.org/license-info
+Only public test data is included, not the RFC's implementation code.
+
 Trust Wallet Core public test vectors in src/core/tests.rs
 Copyright Trust Wallet
 Source: https://github.com/trustwallet/wallet-core/tree/4.8.4/tests/chains/Tron

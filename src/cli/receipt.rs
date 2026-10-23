@@ -4,13 +4,14 @@ use alloy::primitives::U256;
 use anyhow::{Result, bail};
 
 use super::network::{Chain, Network};
-use crate::{ethereum, transaction::Transfer, tron};
+use crate::{ethereum, solana, transaction::Transfer, tron};
 
 pub(super) fn native_amount(network: Network, units: U256) -> String {
     let (decimals, symbol) = match network.chain() {
         Chain::Tron(_) => (6, "TRX"),
         Chain::Ethereum(ethereum::Network::Polygon) => (18, "POL"),
         Chain::Ethereum(_) => (18, "ETH"),
+        Chain::Solana(_) => (9, "SOL"),
     };
     format!("{} {symbol}", ethereum::format_amount(units, decimals))
 }
@@ -162,6 +163,34 @@ pub(super) fn tron(
         println!("{message}");
     }
     if matches!(status.state, tron::TxState::Failed) {
+        bail!("transaction failed on chain");
+    }
+    Ok(())
+}
+
+pub(super) fn solana(
+    network: Network,
+    txid: &str,
+    status: &solana::TxStatus,
+    intent: Option<(&str, &Transfer)>,
+) -> Result<()> {
+    field("Network", network.label());
+    field("Transaction", txid);
+    field("State", format_args!("{:?}", status.state));
+    field("Finalized", status.finalized);
+    if let Some((from, transfer)) = intent {
+        parties(Some(from), None, Some(transfer));
+    }
+    if let Some(fee) = status.actual_fee {
+        field("Actual fee", native_amount(network, U256::from(fee)));
+    }
+    if let Some(slot) = status.slot {
+        field("Slot", slot);
+    }
+    if let Some(error) = &status.error {
+        field("Error", error);
+    }
+    if matches!(status.state, solana::TxState::Failed) {
         bail!("transaction failed on chain");
     }
     Ok(())

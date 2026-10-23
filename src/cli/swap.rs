@@ -7,7 +7,7 @@ use super::{
     network::{Chain, Network},
     receipt,
 };
-use crate::{ethereum, swap::Summary, tron, vault, wallet::Wallet};
+use crate::{ethereum, solana, swap::Summary, tron, vault, wallet::Wallet};
 
 #[derive(Args)]
 pub(super) struct Swap {
@@ -53,6 +53,19 @@ impl Swap {
                 let key = authorize(network, wallet, &quote.summary)?;
                 client.execute_swap(&quote, &key, receipt::transaction, |stage, fee| {
                     fees.record(stage, fee);
+                })
+            }
+            Chain::Solana(chain) => {
+                let client = solana::Client::new(chain, rpc, token)?;
+                let quote = client.quote_swap(&from, &self.amount, self.slippage_bps)?;
+                preview(network, &from, &quote.summary, self.slippage_bps);
+                if self.dry_run {
+                    println!("Not signed or broadcast.");
+                    return Ok(());
+                }
+                let key = authorize(network, wallet, &quote.summary)?;
+                client.execute_swap(&quote, &key, receipt::transaction, |stage, fee| {
+                    fees.record(stage, alloy::primitives::U256::from(fee));
                 })
             }
         };
