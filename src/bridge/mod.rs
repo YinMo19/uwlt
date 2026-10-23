@@ -1,12 +1,13 @@
-//! MetaMask bridge routing; all transactions and approvals are signed locally.
+//! MetaMask bridge and native swap routing; transactions are signed locally.
 //!
-//! Trust boundary: token transfers and approvals are decoded exactly. EVM router
-//! calldata is opaque; Solana supports decoded direct deposits only. MetaMask and
-//! its protocol remain trusted for router semantics and deposit-to-recipient mapping.
-//! Envelope checks and exact local transfers do not guarantee destination delivery.
+//! Trust boundary: token transfers and approvals are decoded exactly. Native
+//! swaps require supported atomic router envelopes binding input/native minimum
+//! and recipient; nested router semantics remain trusted. Cross-chain Solana
+//! supports decoded deposits only, which do not guarantee destination delivery.
 //! Uses the wallet backend's getQuote API, not a MetaMask wallet or signing service.
 //! Schema: github.com/MetaMask/core/tree/main/packages/bridge-controller/src/validators.
 mod amount;
+mod native;
 mod solana_route;
 mod status;
 mod transaction;
@@ -67,11 +68,29 @@ impl Chain {
     }
 }
 
+pub use native::{NativeSwapQuote, NativeSwapTransaction};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purpose {
+    Bridge,
+    Swap,
+}
+
+impl Purpose {
+    pub fn stage(self) -> &'static str {
+        match self {
+            Self::Bridge => "bridge",
+            Self::Swap => "swap",
+        }
+    }
+}
+
 pub struct ContractCall {
+    pub purpose: Purpose,
     pub token: String,
     /// None means no new allowance instruction; never infer a spender from txTo.
     pub spender: Option<String>,
-    /// Exact requested USDT input, including direct deposits and preapproved routes.
+    /// Exact requested USDT input, including any input-denominated provider fee.
     pub amount: U256,
     pub to: String,
     pub data: Vec<u8>,

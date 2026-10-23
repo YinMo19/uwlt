@@ -68,13 +68,21 @@ uwlt --network ethereum send 100 --to savings --to-network mainnet --slippage 0.
 uwlt --network ethereum bridge-status <源链交易哈希> --to-network mainnet --bridge-id <Bridge_ID> --request-id <请求ID>
 ```
 
-`swap` 将 USDT 换成当前链的手续费币。Solana 主网通过 [Jupiter V2 `/build`](https://developers.jup.ag/docs/swap/build) 获取单跳 Raydium AMM v4 路线，在本地校验指令、构建交易并模拟精确输入和最低原生 SOL 输出；自动解包 SOL，不收额外平台费或授予代币授权。USDT 需位于发送方 ATA，钱包需有 SOL 支付手续费和账户押金；若已有非零 wrapped SOL 余额，须先处理该余额以免一并解包。支持免 API key 请求，也可设置 `UWLT_JUPITER_API_KEY` 提高服务额度；限流、无支持路线或接口变化会明确报错，不自动改走其他服务。只接受可解析的单跳路线，不保证 Jupiter 全市场最优报价。
+`swap` 在 Ethereum、Polygon、TRON（`mainnet`）、Solana 上统一使用 **MetaMask 报价与路由服务**，将 USDT/USDT0 换成当前链的原生手续费币 ETH/POL/TRX/SOL。不再直接请求 Uniswap、QuickSwap、SunSwap 或 Jupiter 报价，也不在 MetaMask 无路线时自动回退旧 DEX；底层执行协议仍可能是这些 DEX。无需 MetaMask 钱包或 API key，私钥和 Touch ID 签名仍在 uwlt 本机。
+
+- 同链只执行能在兑换交易中交付原生币的受支持路线，拒绝先充值再兑付、桥接、额外签名、gasless/7702 等路线；不能把充值交易确认当作原生币到账。部分金额可能因此没有兼容路线，尤其是 TRON 返回 Bridgers/XO Swap 兑付路线时。
+- Ethereum/Polygon 校验 MetaSwap 路由器和受支持适配器的精确输入、原生币输出、费用及最低值；TRON 校验 Rango 原子兑换及其受支持的 SunSwap 调用。内部 DEX 调用和适配器实现仍是信任边界，不代表支持 MetaMask 的全部协议。
+- Solana 使用 MetaMask 返回的 Jupiter 路线，支持可完整解析的多跳指令及地址查找表；解码布局按 Jupiter 程序持有的链上 IDL 校准，包含 ByrealDynamicV3、JupiterLendDexSwap 等新变体，未知或未支持的动态布局仍会拒绝。USDT 需位于发送方 ATA，钱包需有 SOL 支付网络费和账户押金；若已有非零 wSOL 余额，须先处理该余额以免一并解包。兑换和解包在同一笔交易内完成，最终交付原生 SOL，而非 wSOL。
+- 展示的 `Minimum` 为扣除 MetaMask 服务费后的最低原生币到账，网络费另计。EVM/Solana 对扣输出服务费的路线在本地加强链上最低值，覆盖“最低净到账 + 固定服务费”，不降低更严格的原有门槛。服务费可能从输入 USDT 或输出原生币扣除，按返回数据校验并显示，不重复扣费；不承诺 MetaMask 比直连 DEX 更便宜。
+- `--dry-run` 不读取私钥、不签名、不广播。Solana 会模拟完整交易并检查精确 USDT 支出和最低原生 SOL 到账；EVM/TRON 预览校验报价、交易参数和授权预算，实际执行时逐阶段模拟后再签名。费用预算不是实际手续费，Solana 预算还可能包含兑换完成后退回的账户押金。默认滑点 0.5%，报价自请求起最多有效 90 秒。
+
+Solana 兑换模拟接受已关闭 wSOL 账户的两种 RPC 表示：`null`，或零 lamports、空数据、不可执行且归 System Program 所有的账户对象；后者是账户关闭后尚未清除的状态，不代表留下了 wSOL。仍会检查精确 USDT 支出、关闭账户指令及扣除手续费后的最低原生 SOL 到账。
 
 跨链转账使用 **MetaMask 报价与路由服务**，支持 Ethereum、TRON（`mainnet`）、Polygon、Solana 主网之间配置的 USDT/USDT0；具体方向、金额是否可用以实时报价为准，不支持自定义代币。私钥、钱包与 Touch ID 签名仍由 uwlt 在本机管理，不需要安装 MetaMask 或导入助记词。
 
 - 当前直接请求 MetaMask 钱包使用的 `https://bridge.api.cx.metamask.io`，不需要 Rango API key，也不冒充 MetaMask 客户端。接口依据 [MetaMask 官方客户端源码](https://github.com/MetaMask/core/blob/main/packages/bridge-controller/src/utils/fetch.ts)接入；它不是已确认具有第三方稳定性承诺的公共 API。服务端可能调整接口、认证或限流；访问失败会明确报错，不会自动改走其他服务。
 - MetaMask 会聚合底层协议，路线仍可能包含 Rango、LI.FI、Bridgers 等。uwlt 在满足本地执行与滑点要求的报价中选择预计到账最高的路线；不会为更高报价放宽安全检查。多步额外签名、目标链领取、gasless/7702、refuel 及需要独立 TRON 交易备注的路线不执行，也不会丢弃备注后发送。ERC-20/TRC-20 调用数据中的路由后缀保留原样。
-- Solana 发起的路线目前接受可完整解码的 XO Swap（`xoswap`）充值交易，逐项校验付款人、USDT mint、充值/服务费 ATA 和精确金额。未知路由程序、额外签名、授权、备注和地址查找表路线会拒绝，不丢弃指令后发送。充值地址与跨链收款人的映射仍依赖服务方；源交易确认不等于目标链到账。
+- Solana 发起的跨链路线目前接受可完整解码的 XO Swap（`xoswap`）充值交易，逐项校验付款人、USDT mint、充值/服务费 ATA 和精确金额。未知路由程序、额外签名、授权、备注和地址查找表跨链路线会拒绝，不丢弃指令后发送。充值地址与跨链收款人的映射仍依赖服务方；源交易确认不等于目标链到账。
 - `--dry-run` 请求预览报价并校验返回的交易数据，不读取私钥、不签名或广播；服务端可能同时生成报价 ID 和未签名交易。预览不保证余额充足或正式发送时仍有路线。正式发送重新报价，展示路线、预计到账、最低到账、费用、授权对象和本地 gas 预算，再由 Touch ID 授权。默认滑点 **0.5%**，`--slippage` 按百分比指定，最多两位小数；不接受最低到账超出该滑点的路线。报价有效期自请求开始最多 90 秒，提供方更短的期限优先；过期后需重新请求。
 - 展示 MetaMask 服务费，并核对“路由净输入 + MetaMask 费 = 本次输入金额”。实测 1,000 USDT 报价的 MetaMask 费为 8.75 USDT（0.875%），不承诺固定费率或比其他服务便宜；预计到账已包含相关扣费，不再重复扣除。本项目不额外配置推荐费。
 - 钱包仍需源链手续费币（ETH/TRX/POL/SOL）。报价中的额外原生币付款、本地 gas 预算及 Solana 账户免租押金单独展示；预算不是实际费用，链上实际消耗会另行显示。服务端可能因余额条件不给正式报价，即使 `--dry-run` 有路线。

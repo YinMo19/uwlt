@@ -118,11 +118,15 @@ pub(super) const SWAP: &str = cstr!(
   Exchange 10 USDT for ETH from savings with 1% maximum slippage:
     <bold>uwlt swap</bold> 10 <bold>-w</bold> savings <bold>--network</bold> ethereum <bold>--slippage</bold> 1
 
-  Preview USDT to native SOL through Jupiter V2 / Raydium:
+  Preview USDT to native SOL through MetaMask routing:
     <bold>uwlt swap</bold> 10 <bold>--network</bold> solana <bold>--dry-run</bold>
 
+  All networks use MetaMask quotes; keys and signing remain local to uwlt.
+  Provider fees are included in quoted output/input; network gas is additional.
+  Only validated atomic native-coin swaps execute. Deposit/bridge routes are rejected.
+  No compatible quote means an error, not a fallback to a direct DEX.
   Solana requires USDT in the wallet's associated token account and SOL for fees.
-  UWLT_JUPITER_API_KEY is optional. Only validated single-hop routes execute."#
+  Solana previews simulate the transaction; other networks simulate stages before signing."#
 );
 
 pub(super) const FEES: &str = cstr!(

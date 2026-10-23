@@ -3,32 +3,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 
-// Official deployments:
-// https://docs.uniswap.org/contracts/v2/reference/smart-contracts/v2-deployments
-// https://docs.quickswap.exchange/overview/contracts-and-addresses
-const UNISWAP: Address = address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D");
-const QUICKSWAP: Address = address!("a5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff");
 const APPROVAL_GAS: u64 = 120_000;
-const SWAP_GAS: u64 = 400_000;
 const CONTRACT_GAS: u64 = 1_000_000;
 const QUOTE_LIFETIME: u64 = 20 * 60;
 
 sol! {
-    function WETH() external view returns (address);
-    function getAmountsOut(uint256 amountIn, address[] path) external view returns (uint256[]);
     function allowance(address owner, address spender) external view returns (uint256);
     // Ethereum USDT returns no data; Polygon's bool is checked separately.
     function approve(address spender, uint256 value) external;
-    function swapExactTokensForETH(
-        uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline
-    ) external returns (uint256[]);
-}
-
-/// Immutable execution parameters accompany the display-only summary. The budget
-/// covers every possible stage at frozen fee caps; unused gas is not charged.
-pub struct SwapQuote {
-    pub summary: crate::swap::Summary,
-    plan: ContractPlan,
 }
 
 /// Frozen authorization for an exact approval sequence and one contract call.
@@ -54,100 +36,6 @@ pub struct ContractPlan {
 }
 
 impl Client {
-    pub fn quote_swap(&self, from: &str, input: &str, slippage_bps: u16) -> Result<SwapQuote> {
-        let (router, venue) = match self.chain_id {
-            137 => (QUICKSWAP, "QuickSwap V2"),
-            _ => (UNISWAP, "Uniswap V2"),
-        };
-        ensure!(
-            slippage_bps < 10_000,
-            "slippage must be below 10000 basis points"
-        );
-        let sender = parse_address(from)?;
-        ensure!(
-            sender != Address::ZERO,
-            "swap sender cannot be the zero address"
-        );
-        let units = amount::parse(input, 6)?;
-        let token = self.token;
-        self.run(async {
-            let wrapped = self
-                .provider
-                .call(
-                    TransactionRequest::default()
-                        .with_to(router)
-                        .with_call(&WETHCall {})
-                        .with_gas_limit(SWAP_GAS),
-                )
-                .await
-                .context("reading router wrapped-native token")?;
-            let path = vec![token, WETHCall::abi_decode_returns(&wrapped)?];
-            let result = self
-                .provider
-                .call(
-                    TransactionRequest::default()
-                        .with_to(router)
-                        .with_call(&getAmountsOutCall {
-                            amountIn: units,
-                            path: path.clone(),
-                        })
-                        .with_gas_limit(SWAP_GAS),
-                )
-                .await
-                .context("quoting the direct USDT/wrapped-native pool")?;
-            let amounts = getAmountsOutCall::abi_decode_returns(&result)?;
-            ensure!(
-                amounts.len() == 2 && amounts[0] == units,
-                "invalid router quote"
-            );
-            let expected = amounts[1];
-            let minimum = expected
-                .checked_mul(U256::from(10_000 - slippage_bps))
-                .context("quote output exceeds slippage calculation range")?
-                / U256::from(10_000);
-            ensure!(
-                minimum > U256::ZERO,
-                "swap output is too small after slippage"
-            );
-            let deadline = unix_time()? + QUOTE_LIFETIME;
-            let input = swapExactTokensForETHCall {
-                amountIn: units,
-                amountOutMin: minimum,
-                path,
-                to: sender,
-                deadline: U256::from(deadline),
-            }
-            .abi_encode();
-            let plan = self
-                .prepare_sequence(
-                    sender,
-                    token,
-                    Some(router),
-                    units,
-                    router,
-                    input.into(),
-                    U256::ZERO,
-                    SWAP_GAS,
-                    "swap",
-                    deadline,
-                )
-                .await?;
-            Ok(SwapQuote {
-                summary: crate::swap::Summary {
-                    venue,
-                    input: amount::format(units, 6),
-                    expected: amount::format(expected, 18),
-                    minimum: amount::format(minimum, 18),
-                    fee_budget: plan.fee_budget.clone(),
-                    approvals: plan.approvals,
-                    token: self.token_symbol(),
-                    native: self.native_symbol(),
-                },
-                plan,
-            })
-        })
-    }
-
     pub fn prepare_contract(
         &self,
         from: &str,
@@ -207,7 +95,7 @@ impl Client {
             call.data.clone().into(),
             call.value,
             CONTRACT_GAS,
-            "bridge",
+            call.purpose.stage(),
             deadline,
         ))
     }
@@ -267,17 +155,6 @@ impl Client {
             maximum_fee: fees.maximum,
             priority_fee: fees.priority,
         })
-    }
-
-    /// Preserve the quoted swap calldata, minimum and deadline through approvals.
-    pub fn execute_swap(
-        &self,
-        quote: &SwapQuote,
-        key: &[u8; 32],
-        on_transaction: impl FnMut(&str, &str),
-        on_fee: impl FnMut(&str, U256),
-    ) -> Result<String> {
-        self.execute_contract(&quote.plan, key, on_transaction, on_fee)
     }
 
     /// Sign and submit each stage exactly once, waiting for successful inclusion.

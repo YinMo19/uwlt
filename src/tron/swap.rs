@@ -11,37 +11,23 @@ use serde_json::{Value, json};
 use super::{
     Client, TxState,
     fees::{available, signed_bandwidth},
-    format_amount, parse_amount,
+    format_amount,
     transaction::{
         address_hex, address_parameter, contract_success, text, transfer_success, unsigned,
         validate_call,
     },
 };
 
-// Official deployments and ABI:
-// https://github.com/sun-protocol/sunswap-v2-contracts/blob/main/README.md
-// https://github.com/sun-protocol/sunswap-v2-contracts/blob/main/contracts/interfaces/ISunswapV2Router01.sol
-// SunSwap retains the Ethereum ABI names: WETH is WTRX and ETH outputs are TRX.
-const ROUTER: &str = "TNJVzGqKBWkJxJB5XYSqGAwUTV15U24pPq";
 const APPROVAL_LIMIT: u64 = 100_000_000;
-const SWAP_LIMIT: u64 = 300_000_000;
 const CONTRACT_LIMIT: u64 = 500_000_000;
 const BANDWIDTH_CEILING: u64 = 1024;
 const QUOTE_SECONDS: u64 = 20 * 60;
 
 sol! {
     event Approval(address indexed owner, address indexed spender, uint256 value);
-    function WETH() external view returns (address);
     function allowance(address owner, address spender) external view returns (uint256);
     function approve(address spender, uint256 value) external returns (bool);
     function transfer(address recipient, uint256 value) external;
-    function getAmountsOut(uint256 amountIn, address[] path) external view returns (uint256[]);
-    function swapExactTokensForETH(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) external returns (uint256[]);
-}
-
-pub struct SwapQuote {
-    pub summary: crate::swap::Summary,
-    plan: ContractPlan,
 }
 
 /// Fixed token allowance, calldata, native value and per-stage spending limits.
@@ -51,7 +37,6 @@ pub struct ContractPlan {
     from: String,
     router: Option<String>,
     token: String,
-    swap_output: Option<(u64, u64)>,
     allowance: Option<U256>,
     deadline: u64,
     bandwidth_budget: u64,
@@ -95,75 +80,6 @@ impl Step {
 }
 
 impl Client {
-    pub fn quote_swap(&self, from: &str, amount: &str, slippage_bps: u16) -> Result<SwapQuote> {
-        ensure!(
-            slippage_bps < 10_000,
-            "slippage must be below 10000 basis points"
-        );
-        let amount = parse_amount(amount)?;
-        ensure!(amount > 0, "swap amount must be positive");
-        let from = address_hex(from)?;
-        let router = address_hex(ROUTER)?;
-        let owner = abi_address(&from)?;
-        let wrapped = WETHCall::abi_decode_returns(&self.constant(&from, &router, WETHCall {})?)?;
-        let path = vec![abi_address(&self.token)?, wrapped];
-        let amounts = getAmountsOutCall::abi_decode_returns(&self.constant(
-            &from,
-            &router,
-            getAmountsOutCall {
-                amountIn: U256::from(amount),
-                path: path.clone(),
-            },
-        )?)?;
-        ensure!(
-            amounts.len() == 2 && amounts[0] == U256::from(amount),
-            "invalid SunSwap quote amounts"
-        );
-        let expected: u64 = amounts[1]
-            .try_into()
-            .context("TRX output exceeds supported range")?;
-        let minimum = ((u128::from(expected) * u128::from(10_000 - slippage_bps)) / 10_000) as u64;
-        ensure!(minimum > 0, "swap output rounds to zero");
-        let allowance = self.swap_allowance(&from, &router)?;
-        let deadline = now()? + QUOTE_SECONDS;
-        let mut steps = self.approval_steps(&router, U256::from(amount), allowance)?;
-        let approvals = steps.len();
-        steps.push(Step::new(
-            "swap",
-            &router,
-            swapExactTokensForETHCall {
-                amountIn: U256::from(amount),
-                amountOutMin: U256::from(minimum),
-                path,
-                to: owner,
-                deadline: U256::from(deadline),
-            },
-            SWAP_LIMIT,
-            None,
-        ));
-        let plan = self.prepare_sequence(
-            from,
-            Some(router),
-            Some(allowance),
-            deadline,
-            steps,
-            Some((amount, minimum)),
-        )?;
-        Ok(SwapQuote {
-            summary: crate::swap::Summary {
-                venue: "SunSwap V2",
-                input: format_amount(amount),
-                expected: format_amount(expected),
-                minimum: format_amount(minimum),
-                fee_budget: plan.fee_budget.clone(),
-                approvals,
-                token: "USDT",
-                native: "TRX",
-            },
-            plan,
-        })
-    }
-
     pub fn prepare_contract(
         &self,
         from: &str,
@@ -232,7 +148,7 @@ impl Client {
             (None, Vec::with_capacity(1))
         };
         steps.push(Step {
-            stage: "bridge",
+            stage: call.purpose.stage(),
             contract: destination,
             data: hex::encode(&call.data),
             fee_limit: CONTRACT_LIMIT,
@@ -246,7 +162,7 @@ impl Client {
             now + 15 < deadline,
             "bridge quote expired or too close to expiry"
         );
-        self.prepare_sequence(from, router, allowance, deadline, steps, None)
+        self.prepare_sequence(from, router, allowance, deadline, steps)
     }
 
     fn approval_steps(&self, router: &str, amount: U256, allowance: U256) -> Result<Vec<Step>> {
@@ -286,7 +202,6 @@ impl Client {
         allowance: Option<U256>,
         deadline: u64,
         steps: Vec<Step>,
-        swap_output: Option<(u64, u64)>,
     ) -> Result<ContractPlan> {
         let rates = self.fees()?;
         // Calldata may be larger than a router swap's. Reserve envelope/signature
@@ -315,22 +230,11 @@ impl Client {
             from,
             router,
             token: self.token.clone(),
-            swap_output,
             allowance,
             deadline,
             bandwidth_budget,
             steps,
         })
-    }
-
-    pub fn execute_swap(
-        &self,
-        quote: &SwapQuote,
-        key: &[u8; 32],
-        on_transaction: impl FnMut(&str, &str),
-        on_fee: impl FnMut(&str, U256),
-    ) -> Result<String> {
-        self.execute_contract(&quote.plan, key, on_transaction, on_fee)
     }
 
     pub fn execute_contract(
@@ -378,16 +282,6 @@ impl Client {
                     )?;
                 } else if let Some((recipient, amount)) = &step.transfer {
                     transfer_success(&simulation, &quote.from, recipient, &self.token, *amount)?;
-                } else if let Some((amount, minimum)) = quote.swap_output {
-                    let amounts = swapExactTokensForETHCall::abi_decode_returns(&constant_bytes(
-                        &simulation,
-                    )?)?;
-                    ensure!(
-                        amounts.len() == 2
-                            && amounts[0] == U256::from(amount)
-                            && amounts[1] >= U256::from(minimum),
-                        "swap simulation violates quoted amounts"
-                    );
                 }
                 let rates = self.fees()?;
                 let energy = unsigned(&simulation, "energy_used")?;

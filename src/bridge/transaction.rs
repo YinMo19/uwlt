@@ -85,6 +85,7 @@ pub(super) fn normalize(
         }
     };
     Ok(ContractCall {
+        purpose: super::Purpose::Bridge,
         token: chain.token().to_owned(),
         spender: spender.map(|spender| encode_address(chain, spender)),
         amount: units,

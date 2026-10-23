@@ -9,6 +9,7 @@ mod swap;
 pub(crate) use route::decode_transaction;
 pub use route::{RemoteRoute, RouteTransfer};
 pub use status::{TxState, TxStatus};
+pub use swap::NativeSwapRoute;
 
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
