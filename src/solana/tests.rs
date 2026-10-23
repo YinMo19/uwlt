@@ -65,8 +65,17 @@ fn latest() -> Value {
 
 #[test]
 fn wrong_cluster_is_rejected_before_queries() {
-    let (endpoint, worker) = rpc_server(vec![("getGenesisHash", json!(MAINNET_GENESIS))]);
-    assert!(Client::new(Network::Devnet, Some(&endpoint), None).is_err());
+    let (endpoint, worker) = rpc_server(vec![(
+        "getGenesisHash",
+        json!(Hash::new_from_array([9; 32]).to_string()),
+    )]);
+    assert!(
+        Client::new(Some(&endpoint))
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("genesis hash does not match mainnet")
+    );
     assert_eq!(worker.join().unwrap().len(), 1);
 }
 
@@ -106,7 +115,7 @@ fn split_token_balance_is_spent_with_checked_transfers_and_rent() {
         ("getBalance", json!({"value":10_000_000})),
         ("simulateTransaction", json!({"value":{"err":null}})),
     ]);
-    let client = Client::new(Network::Mainnet, Some(&endpoint), None).unwrap();
+    let client = Client::new(Some(&endpoint)).unwrap();
     let prepared = client
         .prepare(
             &sender.to_string(),
@@ -153,7 +162,6 @@ fn signed_fixture() -> Signed {
     let prepared = Prepared {
         message,
         sender,
-        network: Network::Devnet,
         last_valid_block_height: Some(100),
         expires_at: now().unwrap() + 90,
         from: sender.to_string(),
@@ -169,11 +177,11 @@ fn signed_fixture() -> Signed {
 fn expiry_after_authorization_never_broadcasts() {
     let signed = signed_fixture();
     let (endpoint, worker) = rpc_server(vec![
-        ("getGenesisHash", json!(DEVNET_GENESIS)),
-        ("getGenesisHash", json!(DEVNET_GENESIS)),
+        ("getGenesisHash", json!(MAINNET_GENESIS)),
+        ("getGenesisHash", json!(MAINNET_GENESIS)),
         ("getBlockHeight", json!(101)),
     ]);
-    let client = Client::new(Network::Devnet, Some(&endpoint), None).unwrap();
+    let client = Client::new(Some(&endpoint)).unwrap();
     assert!(
         client
             .broadcast(&signed)
@@ -187,14 +195,14 @@ fn expiry_after_authorization_never_broadcasts() {
 fn broadcast_mismatch_is_single_attempt_with_recovery_signature() {
     let signed = signed_fixture();
     let (endpoint, worker) = rpc_server(vec![
-        ("getGenesisHash", json!(DEVNET_GENESIS)),
-        ("getGenesisHash", json!(DEVNET_GENESIS)),
+        ("getGenesisHash", json!(MAINNET_GENESIS)),
+        ("getGenesisHash", json!(MAINNET_GENESIS)),
         ("getBlockHeight", json!(99)),
         ("isBlockhashValid", json!({"value":true})),
         ("simulateTransaction", json!({"value":{"err":null}})),
         ("sendTransaction", json!(Signature::default().to_string())),
     ]);
-    let client = Client::new(Network::Devnet, Some(&endpoint), None).unwrap();
+    let client = Client::new(Some(&endpoint)).unwrap();
     let error = client.broadcast(&signed).unwrap_err().to_string();
     assert!(error.contains(&signed.txid) && error.contains("uncertain"));
     let requests = worker.join().unwrap();
@@ -206,4 +214,65 @@ fn broadcast_mismatch_is_single_attempt_with_recovery_signature() {
         1
     );
     assert_eq!(requests.last().unwrap()["params"][1]["maxRetries"], 0);
+}
+
+#[test]
+fn balance_uses_official_mainnet_usdt() {
+    let owner = address(&crate::core::solana_address(&[7; 32]).unwrap()).unwrap();
+    let mint = address(USDT).unwrap();
+    let mut mint_data = vec![0; Mint::LEN];
+    Mint::pack(
+        Mint {
+            mint_authority: COption::None,
+            supply: 10_000_000,
+            decimals: 6,
+            is_initialized: true,
+            freeze_authority: COption::None,
+        },
+        &mut mint_data,
+    )
+    .unwrap();
+    let accounts = [(1, 1_250_000), (2, 2_000_000)].map(|(key, amount)| {
+        json!({
+            "pubkey": Pubkey::new_from_array([key; 32]).to_string(),
+            "account": account_json(spl_token::id(), &token_data(owner, mint, amount), 2_000_000),
+        })
+    });
+    let (endpoint, worker) = rpc_server(vec![
+        ("getGenesisHash", json!(MAINNET_GENESIS)),
+        ("getBalance", json!({"value":1_500_000_000})),
+        (
+            "getAccountInfo",
+            json!({"value":account_json(spl_token::id(),&mint_data,1_000_000)}),
+        ),
+        ("getTokenAccountsByOwner", json!({"value":accounts})),
+    ]);
+    let client = Client::new(Some(&endpoint)).unwrap();
+    let balance = client.balance(&owner.to_string()).unwrap();
+    assert_eq!(balance.native, "1.5");
+    assert_eq!(balance.usdt, "3.25");
+    let requests = worker.join().unwrap();
+    assert_eq!(requests[2]["params"][0], USDT);
+    assert_eq!(requests[3]["params"][1]["mint"], USDT);
+}
+
+#[test]
+fn changed_genesis_never_broadcasts() {
+    let signed = signed_fixture();
+    let (endpoint, worker) = rpc_server(vec![
+        ("getGenesisHash", json!(MAINNET_GENESIS)),
+        (
+            "getGenesisHash",
+            json!(Hash::new_from_array([9; 32]).to_string()),
+        ),
+    ]);
+    let client = Client::new(Some(&endpoint)).unwrap();
+    assert!(
+        client
+            .broadcast(&signed)
+            .unwrap_err()
+            .to_string()
+            .contains("genesis hash does not match mainnet")
+    );
+    assert_eq!(worker.join().unwrap().len(), 2);
 }

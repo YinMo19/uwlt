@@ -56,11 +56,8 @@ pub struct ContractPlan {
 impl Client {
     pub fn quote_swap(&self, from: &str, input: &str, slippage_bps: u16) -> Result<SwapQuote> {
         let (router, venue) = match self.chain_id {
-            1 => (UNISWAP, "Uniswap V2"),
             137 => (QUICKSWAP, "QuickSwap V2"),
-            _ => anyhow::bail!(
-                "USDT-to-native swaps are supported only on Ethereum and Polygon mainnet"
-            ),
+            _ => (UNISWAP, "Uniswap V2"),
         };
         ensure!(
             slippage_bps < 10_000,
@@ -72,7 +69,7 @@ impl Client {
             "swap sender cannot be the zero address"
         );
         let units = amount::parse(input, 6)?;
-        let token = self.token.context("network has no USDT contract")?;
+        let token = self.token;
         self.run(async {
             let wrapped = self
                 .provider
@@ -156,11 +153,7 @@ impl Client {
         from: &str,
         call: &crate::bridge::ContractCall,
     ) -> Result<ContractPlan> {
-        ensure!(
-            matches!(self.chain_id, 1 | 137),
-            "bridge calls require Ethereum or Polygon mainnet"
-        );
-        let token = self.token.context("network has no USDT contract")?;
+        let token = self.token;
         ensure!(
             parse_address(&call.token)? == token,
             "bridge source token is not configured USDT"
@@ -296,7 +289,7 @@ impl Client {
         mut on_fee: impl FnMut(&str, U256),
     ) -> Result<String> {
         ensure!(
-            self.chain_id == quote.chain_id && self.token == Some(quote.token),
+            self.chain_id == quote.chain_id && self.token == quote.token,
             "contract plan belongs to a different network or token"
         );
         let signer = PrivateKeySigner::from_slice(key)?;
@@ -319,7 +312,7 @@ impl Client {
                 );
             }
             ensure!(
-                self.token_balance(quote.sender, quote.token).await? >= quote.units,
+                self.token_balance(quote.sender).await? >= quote.units,
                 "insufficient USDT balance"
             );
             Ok(())

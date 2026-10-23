@@ -21,18 +21,12 @@ pub(super) struct Swap {
 }
 
 impl Swap {
-    pub fn run(
-        self,
-        network: Network,
-        rpc: Option<&str>,
-        token: Option<&str>,
-        wallet: &Wallet,
-    ) -> Result<()> {
+    pub fn run(self, network: Network, rpc: Option<&str>, wallet: &Wallet) -> Result<()> {
         let from = network.address(wallet)?;
         let mut fees = receipt::Fees::new(network);
         let result = match network.chain() {
-            Chain::Tron(chain) => {
-                let client = tron::Client::new(chain, rpc)?;
+            Chain::Tron => {
+                let client = tron::Client::new(rpc)?;
                 let quote = client.quote_swap(&from, &self.amount, self.slippage_bps)?;
                 preview(network, &from, &quote.summary, self.slippage_bps);
                 if self.dry_run {
@@ -44,7 +38,7 @@ impl Swap {
                 })
             }
             Chain::Ethereum(chain) => {
-                let client = ethereum::Client::new(chain, rpc, token)?;
+                let client = ethereum::Client::new(chain, rpc)?;
                 let quote = client.quote_swap(&from, &self.amount, self.slippage_bps)?;
                 preview(network, &from, &quote.summary, self.slippage_bps);
                 if self.dry_run {
@@ -55,8 +49,8 @@ impl Swap {
                     fees.record(stage, fee);
                 })
             }
-            Chain::Solana(chain) => {
-                let client = solana::Client::new(chain, rpc, token)?;
+            Chain::Solana => {
+                let client = solana::Client::new(rpc)?;
                 let quote = client.quote_swap(&from, &self.amount, self.slippage_bps)?;
                 preview(network, &from, &quote.summary, self.slippage_bps);
                 if self.dry_run {

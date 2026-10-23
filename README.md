@@ -1,6 +1,6 @@
 # uwlt
 
-macOS Apple Silicon 原生命令行钱包，支持 TRON、Ethereum、Polygon、Solana，使用 Touch ID 授权私钥操作。
+macOS Apple Silicon 原生命令行钱包，仅支持 TRON、Ethereum、Polygon、Solana 主网，使用 Touch ID 授权私钥操作。
 
 ## 安装
 
@@ -13,6 +13,10 @@ unzip -q uwlt-macos-arm64.zip
 ```
 
 确保 `~/.cargo/bin` 在 `PATH` 中；保留安装后的 `~/Applications/uwlt.app`。
+
+从源码安装使用 `./scripts/install-macos.sh`：脚本执行 `cargo install` 后，使用签名配置打包应用并更新可执行文件链接，保留钥匙串所需的应用身份。不要直接覆盖已签名应用中的二进制文件。
+
+应用保留 macOS Hardened Runtime 和库签名校验，仅链接系统动态库，不依赖 Homebrew OpenSSL。
 
 ## 日常使用
 
@@ -31,6 +35,8 @@ uwlt fees --all                   # 各网络手续费预览
 
 `balance` 默认查询所有本地钱包在所选网络上的余额，无需 `--all`；用 `balance -w savings` 只查询指定钱包，或用 `balance <地址>` 查询指定地址。其他需要选择钱包的命令默认使用 `main`，用 `-w savings` 切换。`--to` 可填地址或本地钱包名。创建、导入不选网络；其他网络相关操作未传 `--network` 时会交互询问，没有默认网络。
 
+可选网络仅为 `mainnet`（TRON）、`ethereum`、`polygon`、`solana`；`fees --all` 只查询这四条主网。各网络固定使用主网 USDT/USDT0，不提供自定义代币配置。
+
 ## Solana
 
 ```sh
@@ -41,12 +47,10 @@ uwlt --network solana send 0.01 --sol --to savings --dry-run
 uwlt --network solana send 10 --to savings --dry-run # 默认发送 USDT
 uwlt --network solana fees
 uwlt --network solana status <Base58交易签名>
-uwlt --network solana-devnet balance
-uwlt --network solana-devnet --token <六位精度的SPL测试mint> send 1 --to savings --dry-run
 ```
 
-- `solana` 为主网，`solana-devnet` 为开发网；使用 `--rpc` 或 `UWLT_RPC` 指定节点时会校验 genesis hash，防止串网。SOL 使用 9 位精度，USDT 使用 6 位精度，全程使用整数金额。
-- 主网固定使用 [Tether 官方 Solana USDT](https://tether.to/en/supported-protocols/)：`Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`。Devnet 不冒充有官方 USDT：不传 `--token` 时仅查询和发送 SOL；测试代币必须是六位精度、已初始化的经典 SPL Token mint，不支持 Token-2022。
+- `solana` 为主网；使用 `--rpc` 或 `UWLT_RPC` 指定节点时仍会校验主网 genesis hash，防止串网。SOL 使用 9 位精度，USDT 使用 6 位精度，全程使用整数金额。
+- 固定使用经典 SPL Token 的 [Tether 官方 Solana USDT](https://tether.to/en/supported-protocols/)：`Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`，不接受其他 mint。
 - `--sol` 发送 SOL，不传原生币参数则发送 USDT。USDT 的 `--to` 填钱包所有者地址，不是 token account 地址；接收方关联代币账户（ATA）不存在时自动创建，预览会把网络费和账户免租押金分开显示。同链转账可合并发送方多个代币账户的余额；异常授权、冻结或不匹配的代币账户会明确报错。
 - 同链转账和兑换的预览会检查余额并执行 RPC 模拟；不读取私钥、不签名、不广播。正式发送在 Touch ID 后重新检查区块哈希有效性，不偷偷更换消息或重复广播。出现广播结果不确定时，用已打印的签名查询 `status`，不要直接重发。
 - 新建、导入的钱包自动保存 Solana 公共地址。现有 32 字节私钥直接作为 Ed25519 seed，TRON/EVM 地址和备份不变；不是从 TRON 地址或助记词推导 Solana 地址。备份/导入仍使用 64 个十六进制字符（32 字节），不接受 Solana CLI 的 64 字节 JSON 密钥文件。旧钱包缺少地址时需运行一次 `sync`；迁移后查询地址和余额无需 Touch ID。`sync` 会更新 iCloud 公共地址元数据，请先升级所有设备上的 uwlt。
@@ -64,9 +68,9 @@ uwlt --network ethereum send 100 --to savings --to-network mainnet --slippage 0.
 uwlt --network ethereum bridge-status <源链交易哈希> --to-network mainnet --bridge-id <Bridge_ID> --request-id <请求ID>
 ```
 
-`swap` 将 USDT 换成当前链的手续费币。Solana 主网通过 [Jupiter V2 `/build`](https://developers.jup.ag/docs/swap/build) 获取单跳 Raydium AMM v4 路线，在本地校验指令、构建交易并模拟精确输入和最低原生 SOL 输出；自动解包 SOL，不收额外平台费或授予代币授权。USDT 需位于发送方 ATA，钱包需有 SOL 支付手续费和账户押金；若已有非零 wrapped SOL 余额，须先处理该余额以免一并解包。支持免 API key 请求，也可设置 `UWLT_JUPITER_API_KEY` 提高服务额度；限流、无支持路线或接口变化会明确报错，不自动改走其他服务。只接受可解析的单跳路线，不保证 Jupiter 全市场最优报价，不支持 Devnet 兑换。
+`swap` 将 USDT 换成当前链的手续费币。Solana 主网通过 [Jupiter V2 `/build`](https://developers.jup.ag/docs/swap/build) 获取单跳 Raydium AMM v4 路线，在本地校验指令、构建交易并模拟精确输入和最低原生 SOL 输出；自动解包 SOL，不收额外平台费或授予代币授权。USDT 需位于发送方 ATA，钱包需有 SOL 支付手续费和账户押金；若已有非零 wrapped SOL 余额，须先处理该余额以免一并解包。支持免 API key 请求，也可设置 `UWLT_JUPITER_API_KEY` 提高服务额度；限流、无支持路线或接口变化会明确报错，不自动改走其他服务。只接受可解析的单跳路线，不保证 Jupiter 全市场最优报价。
 
-跨链转账使用 **MetaMask 报价与路由服务**，支持 Ethereum、TRON（`mainnet`）、Polygon、Solana 主网之间配置的 USDT/USDT0；具体方向、金额是否可用以实时报价为准，不支持测试网或自定义代币。私钥、钱包与 Touch ID 签名仍由 uwlt 在本机管理，不需要安装 MetaMask 或导入助记词。
+跨链转账使用 **MetaMask 报价与路由服务**，支持 Ethereum、TRON（`mainnet`）、Polygon、Solana 主网之间配置的 USDT/USDT0；具体方向、金额是否可用以实时报价为准，不支持自定义代币。私钥、钱包与 Touch ID 签名仍由 uwlt 在本机管理，不需要安装 MetaMask 或导入助记词。
 
 - 当前直接请求 MetaMask 钱包使用的 `https://bridge.api.cx.metamask.io`，不需要 Rango API key，也不冒充 MetaMask 客户端。接口依据 [MetaMask 官方客户端源码](https://github.com/MetaMask/core/blob/main/packages/bridge-controller/src/utils/fetch.ts)接入；它不是已确认具有第三方稳定性承诺的公共 API。服务端可能调整接口、认证或限流；访问失败会明确报错，不会自动改走其他服务。
 - MetaMask 会聚合底层协议，路线仍可能包含 Rango、LI.FI、Bridgers 等。uwlt 在满足本地执行与滑点要求的报价中选择预计到账最高的路线；不会为更高报价放宽安全检查。多步额外签名、目标链领取、gasless/7702、refuel 及需要独立 TRON 交易备注的路线不执行，也不会丢弃备注后发送。ERC-20/TRC-20 调用数据中的路由后缀保留原样。

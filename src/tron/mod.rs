@@ -24,14 +24,6 @@ use transaction::{
 
 /// Tether's official TRON mainnet USDT contract (six decimals).
 pub const USDT: &str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
-/// Nile example test token; this is not mainnet USDT and has no real-asset value.
-pub const NILE_USDT: &str = "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf";
-
-#[derive(Clone, Copy, Debug)]
-pub enum Network {
-    Mainnet,
-    Nile,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Asset {
@@ -63,20 +55,15 @@ pub struct Prepared {
 
 pub struct Client {
     http: blocking::Client,
-    network: Network,
     endpoint: Url,
     token: String,
     next_request: Option<Cell<Instant>>,
 }
 
 impl Client {
-    pub fn new(network: Network, endpoint: Option<&str>) -> Result<Self> {
-        let (default_endpoint, token) = match network {
-            Network::Mainnet => ("https://api.trongrid.io/", USDT),
-            Network::Nile => ("https://nile.trongrid.io/", NILE_USDT),
-        };
-        let mut endpoint =
-            Url::parse(endpoint.unwrap_or(default_endpoint)).context("invalid RPC endpoint URL")?;
+    pub fn new(endpoint: Option<&str>) -> Result<Self> {
+        let mut endpoint = Url::parse(endpoint.unwrap_or("https://api.trongrid.io/"))
+            .context("invalid RPC endpoint URL")?;
         if !endpoint.path().ends_with('/') {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
@@ -91,10 +78,8 @@ impl Client {
             Ok(_) | Err(env::VarError::NotPresent) => {}
             Err(error) => return Err(error).context("invalid UWLT_TRONGRID_API_KEY"),
         }
-        let public_trongrid = matches!(
-            endpoint.host_str(),
-            Some("api.trongrid.io" | "nile.trongrid.io")
-        ) && !headers.contains_key("TRON-PRO-API-KEY");
+        let public_trongrid = endpoint.host_str() == Some("api.trongrid.io")
+            && !headers.contains_key("TRON-PRO-API-KEY");
         let http = blocking::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
@@ -105,9 +90,8 @@ impl Client {
             .context("cannot initialize TRON HTTP client")?;
         Ok(Self {
             http,
-            network,
             endpoint,
-            token: address_hex(token)?,
+            token: address_hex(USDT)?,
             next_request: public_trongrid.then(|| Cell::new(Instant::now())),
         })
     }

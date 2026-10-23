@@ -37,16 +37,15 @@ pub struct Cli {
         help = "Wallet name (balance: all wallets when omitted; other commands: main)"
     )]
     wallet: Option<String>,
-    #[arg(long, global = true, value_enum, help = "Network; prompt when omitted")]
-    network: Option<Network>,
-    #[arg(long, global = true, env = "UWLT_RPC", help = "HTTP RPC endpoint")]
-    rpc: Option<String>,
     #[arg(
         long,
         global = true,
-        help = "Six-decimal test token: Sepolia contract or Solana Devnet SPL mint"
+        value_enum,
+        help = "Mainnet network; prompt when omitted"
     )]
-    token: Option<String>,
+    network: Option<Network>,
+    #[arg(long, global = true, env = "UWLT_RPC", help = "HTTP RPC endpoint")]
+    rpc: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -131,16 +130,9 @@ enum Command {
 impl Cli {
     pub fn run(self) -> Result<()> {
         let wallet_name = self.wallet.as_deref().unwrap_or("main");
-        let select_network = || -> Result<Network> {
-            let network = match self.network {
-                Some(network) => network,
-                None => Network::prompt()?,
-            };
-            ensure!(
-                self.token.is_none() || matches!(network, Network::Sepolia | Network::SolanaDevnet),
-                "--token is only used with Sepolia or Solana Devnet"
-            );
-            Ok(network)
+        let select_network = || match self.network {
+            Some(network) => Ok(network),
+            None => Network::prompt(),
         };
         match self.command {
             Command::Help { command } => {
@@ -219,7 +211,6 @@ impl Cli {
                     query::balance(
                         network,
                         self.rpc.as_deref(),
-                        self.token.as_deref(),
                         store.entries().map(|(name, wallet)| {
                             network
                                 .address(wallet)
@@ -234,33 +225,19 @@ impl Cli {
                             network.address(Store::open()?.get(wallet_name)?)?,
                         ),
                     };
-                    query::balance(
-                        network,
-                        self.rpc.as_deref(),
-                        self.token.as_deref(),
-                        std::iter::once(Ok(account)),
-                    )?;
+                    query::balance(network, self.rpc.as_deref(), std::iter::once(Ok(account)))?;
                 }
             }
             Command::Swap(swap) => {
                 let network = select_network()?;
                 let store = Store::open()?;
-                swap.run(
-                    network,
-                    self.rpc.as_deref(),
-                    self.token.as_deref(),
-                    store.get(wallet_name)?,
-                )?;
+                swap.run(network, self.rpc.as_deref(), store.get(wallet_name)?)?;
             }
             Command::Fees { all } => {
                 if all {
                     fees::all()?;
                 } else {
-                    fees::run(
-                        select_network()?,
-                        self.rpc.as_deref(),
-                        self.token.as_deref(),
-                    )?;
+                    fees::run(select_network()?, self.rpc.as_deref())?;
                 }
             }
             Command::Send(mut transfer) => {
@@ -268,12 +245,7 @@ impl Cli {
                 let store = Store::open()?;
                 transfer.resolve_recipient(network, &store)?;
                 println!("Wallet   {wallet_name}");
-                transfer.run(
-                    network,
-                    self.rpc.as_deref(),
-                    self.token.as_deref(),
-                    store.get(wallet_name)?,
-                )?;
+                transfer.run(network, self.rpc.as_deref(), store.get(wallet_name)?)?;
             }
             Command::BridgeStatus {
                 txid,
@@ -290,12 +262,7 @@ impl Cli {
                 )?;
             }
             Command::Status { txid } => {
-                query::status(
-                    select_network()?,
-                    self.rpc.as_deref(),
-                    self.token.as_deref(),
-                    &txid,
-                )?;
+                query::status(select_network()?, self.rpc.as_deref(), &txid)?;
             }
             Command::Key => {
                 let store = Store::open()?;

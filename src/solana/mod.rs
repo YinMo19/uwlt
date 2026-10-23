@@ -13,17 +13,15 @@ pub use status::{TxState, TxStatus};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-use solana_sdk::{
-    hash::Hash,
-    instruction::Instruction,
-    message::{Message, VersionedMessage},
-    program_option::COption,
-    program_pack::Pack,
-    pubkey::Pubkey,
-    signature::Signature,
-    transaction::VersionedTransaction,
-};
+use solana_hash::Hash;
+use solana_instruction::Instruction;
+use solana_message::{Message, VersionedMessage};
+use solana_program_option::COption;
+use solana_program_pack::Pack;
+use solana_pubkey::Pubkey;
+use solana_signature::Signature;
 use solana_system_interface::{instruction as system_instruction, program as system_program};
+use solana_transaction::versioned::VersionedTransaction;
 use spl_token::state::{Account as TokenAccount, AccountState, Mint};
 use std::{
     str::FromStr,
@@ -32,21 +30,15 @@ use std::{
 
 pub const USDT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 const MAINNET_GENESIS: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
-const DEVNET_GENESIS: &str = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Network {
-    Mainnet,
-    Devnet,
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Asset {
     Usdt,
     Native,
 }
 pub struct Balances {
-    pub usdt: Option<String>,
+    pub usdt: String,
     pub native: String,
 }
 pub struct FeeRates {
@@ -58,7 +50,6 @@ pub struct FeeRates {
 pub struct Prepared {
     message: VersionedMessage,
     sender: Pubkey,
-    network: Network,
     last_valid_block_height: Option<u64>,
     pub expires_at: u64,
     pub from: String,
@@ -72,15 +63,13 @@ pub struct Signed {
     pub txid: String,
     raw: Vec<u8>,
     blockhash: Hash,
-    network: Network,
     last_valid_block_height: Option<u64>,
     expires_at: u64,
 }
 pub struct Client {
     http: reqwest::blocking::Client,
     endpoint: reqwest::Url,
-    network: Network,
-    token: Option<Pubkey>,
+    token: Pubkey,
 }
 struct Account {
     owner: Pubkey,
@@ -90,21 +79,7 @@ struct Account {
 }
 
 impl Client {
-    pub fn new(network: Network, endpoint: Option<&str>, token: Option<&str>) -> Result<Self> {
-        let default = match network {
-            Network::Mainnet => "https://api.mainnet-beta.solana.com",
-            Network::Devnet => "https://api.devnet.solana.com",
-        };
-        let token = match network {
-            Network::Mainnet => {
-                ensure!(
-                    token.is_none() || token == Some(USDT),
-                    "mainnet uses the fixed official USDT mint"
-                );
-                Some(address(USDT)?)
-            }
-            Network::Devnet => token.map(address).transpose()?,
-        };
+    pub fn new(endpoint: Option<&str>) -> Result<Self> {
         let client = Self {
             http: reqwest::blocking::Client::builder()
                 .connect_timeout(Duration::from_secs(10))
@@ -113,11 +88,10 @@ impl Client {
                 .retry(reqwest::retry::never())
                 .build()?,
             endpoint: endpoint
-                .unwrap_or(default)
+                .unwrap_or("https://api.mainnet-beta.solana.com")
                 .parse()
                 .context("invalid Solana RPC URL")?,
-            network,
-            token,
+            token: address(USDT)?,
         };
         client.verify_network()?;
         Ok(client)
@@ -146,13 +120,9 @@ impl Client {
             .with_context(|| format!("Solana {method} response has no result"))
     }
     fn verify_network(&self) -> Result<()> {
-        let expected = match self.network {
-            Network::Mainnet => MAINNET_GENESIS,
-            Network::Devnet => DEVNET_GENESIS,
-        };
         ensure!(
-            self.rpc("getGenesisHash", json!([]))?.as_str() == Some(expected),
-            "Solana RPC genesis hash does not match the selected network"
+            self.rpc("getGenesisHash", json!([]))?.as_str() == Some(MAINNET_GENESIS),
+            "Solana RPC genesis hash does not match mainnet"
         );
         Ok(())
     }
@@ -187,9 +157,8 @@ impl Client {
         Ok(())
     }
     fn mint(&self) -> Result<Pubkey> {
-        let key = self.token.context("Devnet has no official USDT; configure --token with a six-decimal classic SPL test mint")?;
-        self.validate_mint(&key, 6)?;
-        Ok(key)
+        self.validate_mint(&self.token, 6)?;
+        Ok(self.token)
     }
     fn validate_mint(&self, key: &Pubkey, decimals: u8) -> Result<()> {
         let account = self.account(key)?.context("token mint does not exist")?;
@@ -229,18 +198,14 @@ impl Client {
     pub fn balance(&self, address_text: &str) -> Result<Balances> {
         let owner = address(address_text)?;
         let native = amount::format(self.native_balance(&owner)?, 9);
-        let usdt = if self.token.is_some() {
-            let mint = self.mint()?;
-            let accounts = self.token_accounts(&owner, &mint)?;
-            let total = accounts.iter().try_fold(0u64, |total, (_, account)| {
-                total
-                    .checked_add(account.amount)
-                    .context("token balance overflow")
-            })?;
-            Some(amount::format(total, 6))
-        } else {
-            None
-        };
+        let mint = self.mint()?;
+        let accounts = self.token_accounts(&owner, &mint)?;
+        let total = accounts.iter().try_fold(0u64, |total, (_, account)| {
+            total
+                .checked_add(account.amount)
+                .context("token balance overflow")
+        })?;
+        let usdt = amount::format(total, 6);
         Ok(Balances { usdt, native })
     }
     fn latest_blockhash(&self) -> Result<(Hash, u64)> {
@@ -400,7 +365,6 @@ impl Client {
         Ok(Prepared {
             message,
             sender,
-            network: self.network,
             last_valid_block_height: height,
             expires_at,
             from: sender.to_string(),
@@ -429,17 +393,7 @@ impl Client {
         );
         Ok(value.take())
     }
-    fn fresh(
-        &self,
-        network: Network,
-        hash: &Hash,
-        height: Option<u64>,
-        expires_at: u64,
-    ) -> Result<()> {
-        ensure!(
-            self.network == network,
-            "transaction belongs to a different network"
-        );
+    fn fresh(&self, hash: &Hash, height: Option<u64>, expires_at: u64) -> Result<()> {
         ensure!(
             now()? < expires_at,
             "transaction authorization expired; prepare again"
@@ -468,7 +422,6 @@ impl Client {
     }
     pub fn ensure_fresh(&self, prepared: &Prepared) -> Result<()> {
         self.fresh(
-            prepared.network,
             prepared.message.recent_blockhash(),
             prepared.last_valid_block_height,
             prepared.expires_at,
@@ -477,7 +430,6 @@ impl Client {
     /// Send once only; the node may propagate the exact same signed bytes, never a replacement.
     pub fn broadcast(&self, signed: &Signed) -> Result<()> {
         self.fresh(
-            signed.network,
             &signed.blockhash,
             signed.last_valid_block_height,
             signed.expires_at,
@@ -512,7 +464,6 @@ pub fn sign(prepared: &Prepared, key: &[u8; 32]) -> Result<Signed> {
         txid: signature.to_string(),
         raw: bincode::serialize(&transaction)?,
         blockhash: *prepared.message.recent_blockhash(),
-        network: prepared.network,
         last_valid_block_height: prepared.last_valid_block_height,
         expires_at: prepared.expires_at,
     })
@@ -626,7 +577,6 @@ mod tests {
         let mut prepared = Prepared {
             message,
             sender,
-            network: Network::Devnet,
             last_valid_block_height: Some(100),
             expires_at: now().unwrap() + 90,
             from: sender.to_string(),

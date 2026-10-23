@@ -1,6 +1,6 @@
 use super::*;
 use bincode::Options;
-use solana_sdk::instruction::AccountMeta;
+use solana_instruction::AccountMeta;
 use std::collections::HashSet;
 
 /// Exact approved SPL-token transfer legs; destinations are token accounts.
@@ -23,10 +23,6 @@ pub struct RemoteRoute {
 
 impl Client {
     pub fn prepare_route(&self, route: &RemoteRoute) -> Result<Prepared> {
-        ensure!(
-            self.network == Network::Mainnet,
-            "bridge routes require Solana mainnet"
-        );
         let sender = address(&route.from)?;
         self.validate_wallet(&sender)?;
         let mint = self.mint()?;
@@ -42,7 +38,6 @@ impl Client {
             "refusing pre-signed remote transaction"
         );
         self.fresh(
-            self.network,
             transaction.message.recent_blockhash(),
             route.last_valid_block_height,
             route.expires_at,
@@ -224,7 +219,7 @@ fn consume_leg(remaining: &mut Vec<RouteTransfer>, destination: Pubkey, amount: 
     Ok(())
 }
 pub(super) fn is_compute(ix: &Instruction) -> bool {
-    ix.program_id == solana_sdk::compute_budget::id()
+    ix.program_id == solana_compute_budget_interface::id()
 }
 pub(super) fn validate_compute(ix: &Instruction, seen: &mut HashSet<u8>) -> Result<()> {
     ensure!(

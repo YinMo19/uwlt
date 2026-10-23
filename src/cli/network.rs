@@ -3,23 +3,20 @@ use std::io::{self, Write};
 use anyhow::{Result, bail};
 use clap::ValueEnum;
 
-use crate::{ethereum, solana, tron, wallet::Wallet};
+use crate::{ethereum, wallet::Wallet};
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(super) enum Network {
     Mainnet,
-    Nile,
     Ethereum,
-    Sepolia,
     Polygon,
     Solana,
-    SolanaDevnet,
 }
 
 pub(super) enum Chain {
-    Tron(tron::Network),
+    Tron,
     Ethereum(ethereum::Network),
-    Solana(solana::Network),
+    Solana,
 }
 
 impl Network {
@@ -29,12 +26,9 @@ impl Network {
         for (index, network) in networks.iter().enumerate() {
             let description = match network {
                 Self::Mainnet => "TRON mainnet",
-                Self::Nile => "TRON testnet",
                 Self::Ethereum => "Ethereum mainnet",
-                Self::Sepolia => "Ethereum testnet",
                 Self::Polygon => "Polygon PoS",
                 Self::Solana => "Solana mainnet",
-                Self::SolanaDevnet => "Solana devnet",
             };
             eprintln!("  {}. {} ({description})", index + 1, network.label());
         }
@@ -66,44 +60,35 @@ impl Network {
     pub fn label(self) -> &'static str {
         match self {
             Self::Mainnet => "mainnet",
-            Self::Nile => "nile",
             Self::Ethereum => "ethereum",
-            Self::Sepolia => "sepolia",
             Self::Polygon => "polygon",
             Self::Solana => "solana",
-            Self::SolanaDevnet => "solana-devnet",
         }
     }
 
     pub fn chain(self) -> Chain {
         match self {
-            Self::Mainnet => Chain::Tron(tron::Network::Mainnet),
-            Self::Nile => Chain::Tron(tron::Network::Nile),
+            Self::Mainnet => Chain::Tron,
             Self::Ethereum => Chain::Ethereum(ethereum::Network::Mainnet),
-            Self::Sepolia => Chain::Ethereum(ethereum::Network::Sepolia),
             Self::Polygon => Chain::Ethereum(ethereum::Network::Polygon),
-            Self::Solana => Chain::Solana(solana::Network::Mainnet),
-            Self::SolanaDevnet => Chain::Solana(solana::Network::Devnet),
+            Self::Solana => Chain::Solana,
         }
     }
 
-    pub fn bridge_chain(self) -> Result<crate::bridge::Chain> {
+    pub fn bridge_chain(self) -> crate::bridge::Chain {
         match self {
-            Self::Mainnet => Ok(crate::bridge::Chain::Tron),
-            Self::Ethereum => Ok(crate::bridge::Chain::Ethereum),
-            Self::Polygon => Ok(crate::bridge::Chain::Polygon),
-            Self::Solana => Ok(crate::bridge::Chain::Solana),
-            Self::Nile | Self::Sepolia | Self::SolanaDevnet => {
-                bail!("MetaMask-routed transfers require mainnet networks")
-            }
+            Self::Mainnet => crate::bridge::Chain::Tron,
+            Self::Ethereum => crate::bridge::Chain::Ethereum,
+            Self::Polygon => crate::bridge::Chain::Polygon,
+            Self::Solana => crate::bridge::Chain::Solana,
         }
     }
 
     pub fn address(self, wallet: &Wallet) -> Result<String> {
         match self.chain() {
             Chain::Ethereum(_) => wallet.ethereum_address(),
-            Chain::Tron(_) => Ok(wallet.address.clone()),
-            Chain::Solana(_) => wallet.solana_address(),
+            Chain::Tron => Ok(wallet.address.clone()),
+            Chain::Solana => wallet.solana_address(),
         }
     }
 }

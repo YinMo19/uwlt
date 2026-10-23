@@ -68,10 +68,7 @@ pub(super) const BALANCE: &str = cstr!(
     <bold>uwlt balance -w</bold> savings <bold>--network</bold> ethereum
 
   Show every local wallet's USDT and SOL balances:
-    <bold>uwlt balance --network</bold> solana
-
-  Query Devnet with a six-decimal classic SPL test mint:
-    <bold>uwlt balance --network</bold> solana-devnet <bold>--token</bold> TEST_MINT"#
+    <bold>uwlt balance --network</bold> solana"#
 );
 
 pub(super) const SEND: &str = cstr!(

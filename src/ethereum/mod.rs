@@ -28,7 +28,6 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 sol! {
     function balanceOf(address owner) external view returns (uint256);
-    function decimals() external view returns (uint8);
     // The original Ethereum USDT contract does not return a bool.
     function transfer(address recipient, uint256 value) external;
 }
@@ -36,7 +35,6 @@ sol! {
 #[derive(Clone, Copy, Debug)]
 pub enum Network {
     Mainnet,
-    Sepolia,
     Polygon,
 }
 
@@ -47,7 +45,7 @@ pub enum Asset {
 }
 
 pub struct Balances {
-    pub usdt: Option<String>,
+    pub usdt: String,
     pub native: String,
 }
 
@@ -74,19 +72,14 @@ pub struct Client {
     provider: RootProvider,
     runtime: Runtime,
     chain_id: u64,
-    token: Option<Address>,
+    token: Address,
 }
 
 impl Client {
-    pub fn new(network: Network, endpoint: Option<&str>, token: Option<&str>) -> Result<Self> {
+    pub fn new(network: Network, endpoint: Option<&str>) -> Result<Self> {
         let (default_endpoint, chain_id, token) = match network {
-            Network::Mainnet => ("https://ethereum-rpc.publicnode.com", 1, Some(USDT)),
-            Network::Polygon => ("https://polygon.drpc.org", 137, Some(POLYGON_USDT)),
-            Network::Sepolia => (
-                "https://ethereum-sepolia-rpc.publicnode.com",
-                11_155_111,
-                token.map(parse_address).transpose()?,
-            ),
+            Network::Mainnet => ("https://ethereum-rpc.publicnode.com", 1, USDT),
+            Network::Polygon => ("https://polygon.drpc.org", 137, POLYGON_USDT),
         };
         let url: reqwest::Url = endpoint
             .unwrap_or(default_endpoint)
@@ -136,23 +129,9 @@ impl Client {
         })
     }
 
-    async fn token_balance(&self, owner: Address, token: Address) -> Result<U256> {
-        if self.chain_id == 11_155_111 {
-            let request = TransactionRequest::default()
-                .with_to(token)
-                .with_call(&decimalsCall {});
-            let result = self
-                .provider
-                .call(request)
-                .await
-                .context("reading test token decimals")?;
-            ensure!(
-                decimalsCall::abi_decode_returns(&result)? == 6,
-                "Sepolia --token must be a six-decimal USDT-compatible test contract"
-            );
-        }
+    async fn token_balance(&self, owner: Address) -> Result<U256> {
         let request = TransactionRequest::default()
-            .with_to(token)
+            .with_to(self.token)
             .with_call(&balanceOfCall { owner });
         let result = self
             .provider
@@ -166,10 +145,7 @@ impl Client {
         let address = parse_address(address)?;
         self.run(async {
             let native = self.provider.get_balance(address).await?;
-            let usdt = match self.token {
-                Some(token) => Some(amount::format(self.token_balance(address, token).await?, 6)),
-                None => None,
-            };
+            let usdt = amount::format(self.token_balance(address).await?, 6);
             Ok(Balances {
                 usdt,
                 native: amount::format(native, 18),
@@ -193,15 +169,16 @@ impl Client {
             let (destination, value, input) = match asset {
                 Asset::Native => (to, units, Bytes::new()),
                 Asset::Usdt => {
-                    let token = self.token.context(
-                        "Sepolia has no official USDT; configure --token with a six-decimal test contract",
-                    )?;
                     ensure!(
-                        self.token_balance(from, token).await? >= units,
+                        self.token_balance(from).await? >= units,
                         "insufficient USDT balance"
                     );
-                    let input = transferCall { recipient: to, value: units }.abi_encode();
-                    (token, U256::ZERO, Bytes::from(input))
+                    let input = transferCall {
+                        recipient: to,
+                        value: units,
+                    }
+                    .abi_encode();
+                    (self.token, U256::ZERO, Bytes::from(input))
                 }
             };
             let nonce = self.provider.get_transaction_count(from).pending().await?;
@@ -215,18 +192,29 @@ impl Client {
                 .with_nonce(nonce)
                 .with_max_fee_per_gas(fees.maximum)
                 .with_max_priority_fee_per_gas(fees.priority);
-            let gas_limit = self.provider.estimate_gas(request.clone()).pending().await?;
-            let result = self.provider.call(request.with_gas_limit(gas_limit)).pending().await
+            let gas_limit = self
+                .provider
+                .estimate_gas(request.clone())
+                .pending()
+                .await?;
+            let result = self
+                .provider
+                .call(request.with_gas_limit(gas_limit))
+                .pending()
+                .await
                 .context("transfer simulation failed")?;
             // Ethereum USDT returns no data; Polygon USDT0 returns a bool.
             if asset == Asset::Usdt && !result.is_empty() {
                 ensure!(bool::abi_decode(&result)?, "token transfer returned false");
             }
             let maximum_fee = U256::from(gas_limit) * U256::from(fees.maximum);
-            let required = value.checked_add(maximum_fee).context("amount plus fee exceeds uint256 range")?;
+            let required = value
+                .checked_add(maximum_fee)
+                .context("amount plus fee exceeds uint256 range")?;
             ensure!(
                 self.provider.get_balance(from).pending().await? >= required,
-                "insufficient {} for the amount and maximum network fee", self.native_symbol()
+                "insufficient {} for the amount and maximum network fee",
+                self.native_symbol()
             );
             Ok(Prepared {
                 transaction: TxEip1559 {
@@ -316,7 +304,7 @@ mod tests {
         let destination = Address::repeat_byte(2);
         let prepared = Prepared {
             transaction: TxEip1559 {
-                chain_id: 11_155_111,
+                chain_id: 1,
                 nonce: u64::MAX - 1,
                 gas_limit: 21_000,
                 max_fee_per_gas: 2_000_000_000,

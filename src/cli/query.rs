@@ -9,7 +9,6 @@ use crate::{ethereum, solana, tron};
 pub(super) fn balance<'a>(
     network: Network,
     rpc: Option<&str>,
-    token: Option<&str>,
     accounts: impl IntoIterator<Item = Result<(Option<&'a str>, String)>>,
 ) -> Result<()> {
     let mut accounts = accounts.into_iter().peekable();
@@ -18,8 +17,8 @@ pub(super) fn balance<'a>(
         return Ok(());
     }
     match network.chain() {
-        Chain::Tron(network) => {
-            let client = tron::Client::new(network, rpc)?;
+        Chain::Tron => {
+            let client = tron::Client::new(rpc)?;
             for (index, account) in accounts.enumerate() {
                 let (name, address) = account?;
                 let balance = client.balance(&address)?;
@@ -29,26 +28,22 @@ pub(super) fn balance<'a>(
             }
         }
         Chain::Ethereum(network) => {
-            let client = ethereum::Client::new(network, rpc, token)?;
+            let client = ethereum::Client::new(network, rpc)?;
             for (index, account) in accounts.enumerate() {
                 let (name, address) = account?;
                 let balance = client.balance(&address)?;
                 account_heading(index, name, &address);
-                if let Some(usdt) = balance.usdt {
-                    println!("{:<5} {usdt}", client.token_symbol());
-                }
+                println!("{:<5} {}", client.token_symbol(), balance.usdt);
                 println!("{:<5} {}", client.native_symbol(), balance.native);
             }
         }
-        Chain::Solana(network) => {
-            let client = solana::Client::new(network, rpc, token)?;
+        Chain::Solana => {
+            let client = solana::Client::new(rpc)?;
             for (index, account) in accounts.enumerate() {
                 let (name, address) = account?;
                 let balance = client.balance(&address)?;
                 account_heading(index, name, &address);
-                if let Some(usdt) = balance.usdt {
-                    println!("{:<5} {usdt}", client.token_symbol());
-                }
+                println!("{:<5} {}", client.token_symbol(), balance.usdt);
                 println!("{:<5} {}", client.native_symbol(), balance.native);
             }
         }
@@ -66,23 +61,18 @@ fn account_heading(index: usize, name: Option<&str>, address: &str) {
     }
 }
 
-pub(super) fn status(
-    network: Network,
-    rpc: Option<&str>,
-    token: Option<&str>,
-    txid: &str,
-) -> Result<()> {
+pub(super) fn status(network: Network, rpc: Option<&str>, txid: &str) -> Result<()> {
     match network.chain() {
-        Chain::Tron(chain) => {
-            let status = tron::Client::new(chain, rpc)?.status(txid)?;
+        Chain::Tron => {
+            let status = tron::Client::new(rpc)?.status(txid)?;
             receipt::tron(network, txid, &status, None)
         }
         Chain::Ethereum(chain) => {
-            let status = ethereum::Client::new(chain, rpc, token)?.status(txid)?;
+            let status = ethereum::Client::new(chain, rpc)?.status(txid)?;
             receipt::ethereum(network, txid, &status, None)
         }
-        Chain::Solana(chain) => {
-            let status = solana::Client::new(chain, rpc, token)?.status(txid)?;
+        Chain::Solana => {
+            let status = solana::Client::new(rpc)?.status(txid)?;
             receipt::solana(network, txid, &status, None)
         }
     }

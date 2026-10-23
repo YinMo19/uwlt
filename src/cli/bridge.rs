@@ -18,8 +18,8 @@ pub(super) fn send(
     slippage_bps: u16,
     dry_run: bool,
 ) -> Result<()> {
-    let source_chain = source.bridge_chain()?;
-    let destination_chain = destination.bridge_chain()?;
+    let source_chain = source.bridge_chain();
+    let destination_chain = destination.bridge_chain();
     let from = source.address(wallet)?;
     let service = bridge::Client::new()?;
     let quote = service.quote(
@@ -44,10 +44,10 @@ pub(super) fn send(
         .as_ref()
         .context("MetaMask returned no transaction")?;
     if let bridge::Transaction::Solana(route) = transaction {
-        let Chain::Solana(chain) = source.chain() else {
+        let Chain::Solana = source.chain() else {
             anyhow::bail!("Solana bridge transaction on a different source network");
         };
-        let client = solana::Client::new(chain, rpc, None)?;
+        let client = solana::Client::new(rpc)?;
         let plan = client.prepare_route(route)?;
         println!("Deposit      {}", route.transfers[0].destination);
         println!("Approvals    0");
@@ -115,8 +115,8 @@ pub(super) fn send(
         }
     };
     let result = match source.chain() {
-        Chain::Tron(chain) => {
-            let client = tron::Client::new(chain, rpc)?;
+        Chain::Tron => {
+            let client = tron::Client::new(rpc)?;
             let plan = client.prepare_contract(&from, call)?;
             println!("Approvals    {}", plan.approvals);
             println!(
@@ -131,7 +131,7 @@ pub(super) fn send(
             })
         }
         Chain::Ethereum(chain) => {
-            let client = ethereum::Client::new(chain, rpc, None)?;
+            let client = ethereum::Client::new(chain, rpc)?;
             let plan = client.prepare_contract(&from, call)?;
             println!("Approvals    {}", plan.approvals);
             println!(
@@ -145,7 +145,7 @@ pub(super) fn send(
                 fees.record(stage, fee);
             })
         }
-        Chain::Solana(_) => anyhow::bail!("contract transaction on a Solana source network"),
+        Chain::Solana => anyhow::bail!("contract transaction on a Solana source network"),
     };
     fees.finish(result)?;
     println!("Source transaction confirmed; destination delivery is pending.");
@@ -159,8 +159,8 @@ pub(super) fn status(
     request_id: &str,
     txid: &str,
 ) -> Result<()> {
-    let source = source.bridge_chain()?;
-    let destination = destination.bridge_chain()?;
+    let source = source.bridge_chain();
+    let destination = destination.bridge_chain();
     let status = bridge::Client::new()?.status(source, destination, bridge_id, request_id, txid)?;
     println!("Provider MetaMask routing service");
     println!("Bridge   {bridge_id}");

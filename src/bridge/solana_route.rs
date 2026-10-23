@@ -8,7 +8,9 @@ use std::str::FromStr;
 use alloy::primitives::U256;
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
-use solana_sdk::{message::VersionedMessage, pubkey::Pubkey, signature::Signature};
+use solana_message::VersionedMessage;
+use solana_pubkey::Pubkey;
+use solana_signature::Signature;
 
 use super::{amount, text};
 use crate::solana::{RemoteRoute, RouteTransfer, USDT};
@@ -203,7 +205,7 @@ mod tests {
     use super::*;
     use base64::{Engine, engine::general_purpose::STANDARD};
     use serde_json::json;
-    use solana_sdk::transaction::VersionedTransaction;
+    use solana_transaction::versioned::VersionedTransaction;
 
     const SENDER: &str = "9xQeWvG816bUx9EPfEZzxAQbBqFQvcwACV9j8CjKzG77";
     const RECIPIENT: &str = "0x6f33bb1763eebead07cf8815a62fcd7b30311fa3";

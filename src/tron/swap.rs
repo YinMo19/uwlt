@@ -9,7 +9,7 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
 use super::{
-    Client, Network, TxState,
+    Client, TxState,
     fees::{available, signed_bandwidth},
     format_amount, parse_amount,
     transaction::{
@@ -96,7 +96,6 @@ impl Step {
 
 impl Client {
     pub fn quote_swap(&self, from: &str, amount: &str, slippage_bps: u16) -> Result<SwapQuote> {
-        self.swap_mainnet()?;
         ensure!(
             slippage_bps < 10_000,
             "slippage must be below 10000 basis points"
@@ -170,10 +169,6 @@ impl Client {
         from: &str,
         call: &crate::bridge::ContractCall,
     ) -> Result<ContractPlan> {
-        ensure!(
-            matches!(self.network, Network::Mainnet),
-            "bridge calls require TRON mainnet"
-        );
         ensure!(
             address_hex(&call.token)? == self.token,
             "bridge source token is not configured USDT"
@@ -346,8 +341,8 @@ impl Client {
         mut on_fee: impl FnMut(&str, U256),
     ) -> Result<String> {
         ensure!(
-            matches!(self.network, Network::Mainnet) && self.token == quote.token,
-            "contract plan belongs to a different network or token"
+            self.token == quote.token,
+            "contract plan belongs to a different token"
         );
         ensure!(
             address_hex(&crate::core::address(key)?)? == quote.from,
@@ -486,14 +481,6 @@ impl Client {
             })?;
         }
         Ok(last_txid)
-    }
-
-    fn swap_mainnet(&self) -> Result<()> {
-        ensure!(
-            matches!(self.network, Network::Mainnet),
-            "SunSwap swaps are supported only on TRON mainnet"
-        );
-        Ok(())
     }
 
     fn constant<C: SolCall>(&self, from: &str, contract: &str, call: C) -> Result<Vec<u8>> {

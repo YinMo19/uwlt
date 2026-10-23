@@ -29,8 +29,18 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-solana-sdk = "2.3"
+# Avoid the full SDK's OpenSSL-backed precompiles in the signed macOS app.
+solana-compute-budget-interface = "2"
+solana-hash = "2"
+solana-instruction = "2"
+solana-message = { version = "2", features = ["bincode"] }
+solana-program-option = "2"
+solana-program-pack = "2"
+solana-pubkey = { version = "2", features = ["curve25519"] }
+solana-sha256-hasher = "2"
+solana-signature = "2"
 solana-system-interface = { version = "1", features = ["bincode"] }
+solana-transaction = { version = "2", features = ["bincode"] }
 spl-associated-token-account = "7"
 spl-token = "8"
 tempfile = "3"
@@ -38,6 +48,9 @@ time = { version = "0.3", features = ["parsing"] }
 tokio = { version = "1", features = ["rt", "time", "net"] }
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1"
+
+[dev-dependencies]
+solana-signature = { version = "2", features = ["verify"] }
 
 [build-dependencies]
 cc = "1"

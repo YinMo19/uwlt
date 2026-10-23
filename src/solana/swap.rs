@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use super::route::{is_compute, validate_ata, validate_compute};
 use super::*;
-use solana_sdk::{compute_budget::ComputeBudgetInstruction, instruction::AccountMeta};
+use solana_compute_budget_interface::ComputeBudgetInstruction;
+use solana_instruction::AccountMeta;
 
 // https://developers.jup.ag/docs/swap/build
 // V2 route layout: https://docs.rs/carbon-jupiter-swap-decoder/1.0.0/src/carbon_jupiter_swap_decoder/instructions/route_v2.rs.html
@@ -20,10 +21,6 @@ impl Client {
     /// Single-hop Raydium AMM v4 through Jupiter V2. Router programs and RPC
     /// simulation remain trusted; neither is an independent proof of CPI effects.
     pub fn quote_swap(&self, from: &str, input: &str, slippage_bps: u16) -> Result<SwapQuote> {
-        ensure!(
-            self.network == Network::Mainnet,
-            "USDT-to-SOL swaps require Solana mainnet"
-        );
         ensure!(slippage_bps < 10_000, "swap slippage must be below 100%");
         let sender = address(from)?;
         self.validate_wallet(&sender)?;
@@ -245,11 +242,10 @@ impl Client {
                     + u128::from(previous_wrapped_lamports),
             "simulated native SOL output is below the approved minimum"
         );
-        self.fresh(self.network, &hash, Some(height), expires_at)?;
+        self.fresh(&hash, Some(height), expires_at)?;
         let prepared = Prepared {
             message: unsigned.message,
             sender,
-            network: self.network,
             last_valid_block_height: Some(height),
             expires_at,
             from: sender.to_string(),
@@ -422,7 +418,7 @@ fn validate_jupiter_route(
     slippage: u16,
 ) -> Result<()> {
     let data = &ix.data;
-    let discriminator = solana_sdk::hash::hash(b"global:route_v2").to_bytes();
+    let discriminator = solana_sha256_hasher::hash(b"global:route_v2").to_bytes();
     ensure!(
         data.len() == 39 && data[..8] == discriminator[..8],
         "unsupported Jupiter instruction; expected route_v2"

@@ -139,7 +139,7 @@ impl Client {
                 symbol: self.native_symbol(),
             });
         }
-        if Some(destination) == self.token {
+        if destination == self.token {
             let transfer = transferCall::abi_decode(input).ok()?;
             return Some(crate::transaction::Transfer {
                 recipient: transfer.recipient.to_checksum(None),
@@ -245,7 +245,7 @@ mod tests {
             provider,
             runtime,
             chain_id: 137,
-            token: Some(POLYGON_USDT),
+            token: POLYGON_USDT,
         };
         let recipient = Address::repeat_byte(5);
         let input = transferCall {

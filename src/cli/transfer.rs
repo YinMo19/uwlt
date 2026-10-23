@@ -53,13 +53,7 @@ impl Transfer {
         Ok(())
     }
 
-    pub fn run(
-        self,
-        network: Network,
-        rpc: Option<&str>,
-        token: Option<&str>,
-        wallet: &Wallet,
-    ) -> Result<()> {
+    pub fn run(self, network: Network, rpc: Option<&str>, wallet: &Wallet) -> Result<()> {
         if let Some(destination) = self
             .to_network
             .filter(|destination| *destination != network)
@@ -71,10 +65,6 @@ impl Transfer {
             ensure!(
                 self.fee_limit.is_none(),
                 "--fee-limit applies to same-chain TRON transfers"
-            );
-            ensure!(
-                token.is_none(),
-                "--token does not apply to cross-chain transfers"
             );
             return super::bridge::send(
                 network,
@@ -92,12 +82,12 @@ impl Transfer {
             "--slippage requires a different destination network"
         );
         match network.chain() {
-            Chain::Tron(chain) => {
+            Chain::Tron => {
                 ensure!(
                     !self.eth && !self.pol && !self.sol,
                     "use --trx for TRON transfers"
                 );
-                self.tron(network, tron::Client::new(chain, rpc)?, wallet)
+                self.tron(network, tron::Client::new(rpc)?, wallet)
             }
             Chain::Ethereum(chain) => {
                 match chain {
@@ -118,9 +108,9 @@ impl Transfer {
                     self.fee_limit.is_none(),
                     "--fee-limit applies to TRON energy only"
                 );
-                self.ethereum(network, ethereum::Client::new(chain, rpc, token)?, wallet)
+                self.ethereum(network, ethereum::Client::new(chain, rpc)?, wallet)
             }
-            Chain::Solana(chain) => {
+            Chain::Solana => {
                 ensure!(
                     !self.trx && !self.eth && !self.pol,
                     "use --sol for Solana transfers"
@@ -129,7 +119,7 @@ impl Transfer {
                     self.fee_limit.is_none(),
                     "--fee-limit applies to TRON energy only"
                 );
-                self.solana(network, solana::Client::new(chain, rpc, token)?, wallet)
+                self.solana(network, solana::Client::new(rpc)?, wallet)
             }
         }
     }

@@ -8,10 +8,10 @@ use crate::{ethereum, solana, transaction::Transfer, tron};
 
 pub(super) fn native_amount(network: Network, units: U256) -> String {
     let (decimals, symbol) = match network.chain() {
-        Chain::Tron(_) => (6, "TRX"),
+        Chain::Tron => (6, "TRX"),
         Chain::Ethereum(ethereum::Network::Polygon) => (18, "POL"),
         Chain::Ethereum(_) => (18, "ETH"),
-        Chain::Solana(_) => (9, "SOL"),
+        Chain::Solana => (9, "SOL"),
     };
     format!("{} {symbol}", ethereum::format_amount(units, decimals))
 }
